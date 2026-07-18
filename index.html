@@ -365,8 +365,8 @@ html,body{height:100%;font-family:'Roboto',sans-serif;background:var(--off);colo
   .main-area{overflow-y:auto;height:calc(100vh - var(--topbar-h) - 58px);}
   .bottom-nav{display:flex;}
   .fab{bottom:70px;}
-  #aiHelperBubble{bottom:78px;}
-  #aiHelperPanel{bottom:146px;}
+  #aiHelperBubble{bottom:78px!important;}
+  #aiHelperPanel{bottom:146px!important;}
   .page-content{padding:14px 14px 80px;}
   .dash-grid{grid-template-columns:1fr 1fr;}
   .dash-grid-2{grid-template-columns:1fr;}
@@ -770,7 +770,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
 
     <!-- ── TOP BAR ── -->
     <div style="background:var(--rb);padding:10px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25)">
-      <button onclick="closeModal('billModal')" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;font-family:'Rajdhani',sans-serif"><span class="mi" style="font-size:16px">arrow_back</span>Back</button>
+      <button onclick="_stopBillDraftAutoSave();closeModal('billModal')" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:6px 12px;color:#fff;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;font-family:'Rajdhani',sans-serif"><span class="mi" style="font-size:16px">arrow_back</span>Back</button>
       <select id="bill_type" style="padding:6px 12px;font-size:13px;font-weight:700;border-radius:8px;border:none;min-width:160px;outline:none" onchange="updateBillTypeLabel()">
         <option value="invoice">Tax Invoice (GST)</option>
         <option value="non_gst">Non-GST Bill of Supply</option>
@@ -2182,43 +2182,8 @@ function _buildSaveData(){
   };
 }
 
-// Demo workers ki list — inhe Firebase se automatically hatao
-const _DEMO_LOGIN_IDS=['DJEW001','DJEW002','DJEW003','DJEW004','DJEW005'];
-
-function _isDemoData(d){
-  if(!d||!Array.isArray(d.workers))return false;
-  if(d.workers.length===0)return false;
-  // Sirf tab demo data maano jab SAARE workers demo IDs wale hon
-  // Agar koi bhi real worker hai toh demo nahi hai
-  var demoCount = d.workers.filter(function(w){
-    return w.loginId && _DEMO_LOGIN_IDS.indexOf(w.loginId)!==-1;
-  }).length;
-  // Saare workers demo hain tabhi true
-  return demoCount > 0 && demoCount === d.workers.length && d.workers.length >= 3;
-}
-
 function _applyData(d){
   if(!d||typeof d!=='object')return;
-  // Demo data check — agar Firebase mein demo data hai toh clear karo
-  if(_isDemoData(d)){
-    console.log('[DJ Electric] Demo data detected in Firebase — auto-clearing...');
-    // Saare arrays empty karo
-    workers.length=0; bills.length=0; sites.length=0;
-    advanceRequests.length=0; attendanceRecords.length=0;
-    otLogs.length=0; salaryHistory.length=0; stock.length=0;
-    punchRequests.length=0; punchLogs.length=0;
-    // Firebase se bhi delete karo
-    if(firebaseReady && firebaseDB){
-      firebaseDB.ref('djElectricData').set(null).then(function(){
-        console.log('[DJ Electric] Demo data cleared from Firebase');
-        try{localStorage.removeItem(STORAGE_KEY);}catch(e){}
-        // UI refresh
-        try{if(currentRole==='admin')refreshAdmin();}catch(e){}
-      });
-    }
-    try{localStorage.removeItem(STORAGE_KEY);}catch(e){}
-    return; // Apply mat karo demo data
-  }
   if(Array.isArray(d.workers)){workers.length=0;for(var i=0;i<d.workers.length;i++)workers.push(d.workers[i]);}
   if(Array.isArray(d.workTypes)&&d.workTypes.length){workTypes.length=0;for(var i=0;i<d.workTypes.length;i++)workTypes.push(d.workTypes[i]);}
   if(Array.isArray(d.advanceRequests)){advanceRequests.length=0;for(var i=0;i<d.advanceRequests.length;i++)advanceRequests.push(d.advanceRequests[i]);}
@@ -2302,12 +2267,6 @@ function loadFromStorage(){
     // Demo data check: agar _savedBy nahi hai (purana hardcoded data) toh skip
     if(!d._savedBy){
       console.log('[DJ Electric] Old/demo local data ignored (no _savedBy)');
-      localStorage.removeItem(STORAGE_KEY);
-      return false;
-    }
-    // Demo workers check in local storage bhi
-    if(_isDemoData(d)){
-      console.log('[DJ Electric] Demo data in localStorage — clearing');
       localStorage.removeItem(STORAGE_KEY);
       return false;
     }
@@ -3655,6 +3614,54 @@ function adminRepairBills(){
     }).join('')}
   </div>`}`;
 }
+const BILL_DRAFT_KEY = 'djElectric_billDraft';
+function _saveBillDraft(){
+  // Only auto-save drafts for a brand NEW bill — never for an existing bill being
+  // edited (window._editingBillId set), to avoid ever overwriting real saved data.
+  if(window._editingBillId) return;
+  try{
+    const get=(id)=>{const el=document.getElementById(id);return el?el.value:'';};
+    const draft={
+      savedAt:Date.now(),
+      billNo:get('bill_no'), clientName:get('bill_client_name'), clientPhone:get('bill_client_phone'),
+      clientAddress:get('bill_client_address'), billDate:get('bill_date'), dueDate:get('bill_due_date'),
+      gstPct:get('gst_pct'), billType:get('bill_type'), received:get('received_amt'), prevBalance:get('prev_balance'),
+      note:get('bill_note'), terms:get('bill_terms_inline'), siteId:get('bill_site_id'),
+      billItems: JSON.parse(JSON.stringify(billItems||[]))
+    };
+    localStorage.setItem(BILL_DRAFT_KEY, JSON.stringify(draft));
+  }catch(e){}
+}
+function _restoreBillDraftIfAny(){
+  try{
+    const raw = localStorage.getItem(BILL_DRAFT_KEY);
+    if(!raw) return false;
+    const draft = JSON.parse(raw);
+    // Ignore stale drafts older than 3 days
+    if(!draft || (Date.now()-(draft.savedAt||0)) > 3*24*60*60*1000){ localStorage.removeItem(BILL_DRAFT_KEY); return false; }
+    // Nothing meaningful was actually filled in — skip restoring an empty draft
+    const hasContent = draft.clientName || (draft.billItems||[]).some(it=>it.desc);
+    if(!hasContent) return false;
+    const set=(id,val)=>{const el=document.getElementById(id);if(el&&val!==undefined&&val!=='')el.value=val;};
+    set('bill_client_name',draft.clientName); set('bill_client_phone',draft.clientPhone);
+    set('bill_client_address',draft.clientAddress); set('bill_date',draft.billDate); set('bill_due_date',draft.dueDate);
+    set('gst_pct',draft.gstPct); set('bill_type',draft.billType); set('received_amt',draft.received);
+    set('prev_balance',draft.prevBalance); set('bill_note',draft.note); set('bill_terms_inline',draft.terms);
+    set('bill_site_id',draft.siteId);
+    if(Array.isArray(draft.billItems)&&draft.billItems.length){ billItems=draft.billItems; renderBillItems(); }
+    updateBillTypeLabel();
+    showToast('📝 Aapka adhura bill form wapas restore ho gaya','success');
+    return true;
+  }catch(e){ return false; }
+}
+function _clearBillDraft(){ try{ localStorage.removeItem(BILL_DRAFT_KEY); }catch(e){} }
+let _billDraftInterval=null;
+function _startBillDraftAutoSave(){
+  clearInterval(_billDraftInterval);
+  _billDraftInterval = setInterval(_saveBillDraft, 4000); // periodic safety-net save
+}
+function _stopBillDraftAutoSave(){ clearInterval(_billDraftInterval); _billDraftInterval=null; }
+
 function openBillModal(){
   billItems=[{type:'heading',desc:'Material'},{desc:'',unit:'nos',qty:1,rate:0}];
   const today=new Date();
@@ -3684,6 +3691,10 @@ function openBillModal(){
   }
   window._editingBillId=null;
   openModal('billModal');
+  // If the app was minimized/reloaded mid-way through filling a NEW bill, bring
+  // that in-progress data right back instead of starting over from a blank form.
+  _restoreBillDraftIfAny();
+  _startBillDraftAutoSave();
 }
 function addBillItem(){
   billItems.push({desc:'',unit:'nos',qty:1,rate:0});
@@ -3904,6 +3915,8 @@ function sendBill(){
   };
   bills.unshift(newBill);
   closeModal('billModal');
+  _stopBillDraftAutoSave();
+  if(!window._editingBillId) _clearBillDraft();
   saveToStorage();
   showToast(carryOverWorkerMeta.reviewStatus==='approved'?'✓ Employee bill reviewed & saved: '+billNo+' 📄':'✓ Bill Created: '+billNo+' 📄','success');
   adminTab('billing');
@@ -7263,17 +7276,6 @@ window.onload=async()=>{
   console.log('[DJ Electric] Local data loaded:',localLoaded);
   // Agar Firebase connected hai, local data temporary hai — overwrite hoga Firebase se
 
-  // ── DEMO DATA AUTO-CLEAR on first load ──
-  // Agar localStorage mein demo data hai toh hatao
-  if(_isDemoData({workers:workers})){
-    workers.length=0;bills.length=0;sites.length=0;
-    advanceRequests.length=0;attendanceRecords.length=0;
-    otLogs.length=0;salaryHistory.length=0;stock.length=0;
-    punchRequests.length=0;punchLogs.length=0;
-    try{localStorage.removeItem(STORAGE_KEY);}catch(e){}
-    console.log('[DJ Electric] Demo data cleared from memory on load');
-  }
-
   // 2. Cloud config load karo (Firebase)
   var cloudType = loadCloudConfig();
   if(!cloudType) loadFirebaseConfigFromStorage(); // legacy support
@@ -7341,6 +7343,7 @@ window.onload=async()=>{
     if(document.hidden){
       _appWasHidden = true;
       try{ saveToStorage(); }catch(e){}
+      try{ if(document.getElementById('billModal')?.classList.contains('open')) _saveBillDraft(); }catch(e){}
     } else {
       if(_appWasHidden){
         _appWasHidden = false;
@@ -9332,15 +9335,26 @@ function adminWorkLog(){
 // ════ 4. WORK LOG — Worker ════
 function workerWorkLog(){
   const w=loggedInWorker;if(!w)return '<div class="empty"><p>Please login first</p></div>';
-  const logs=workLogs.filter(l=>+l.workerId===+w.id).sort((a,b)=>b.date.localeCompare(a.date));
+  // Exclude entries auto-created from a repair bill submission (billId set) — those
+  // belong exclusively in the Repair Bill tab, not duplicated here.
+  const logs=workLogs.filter(l=>+l.workerId===+w.id&&!l.billId).sort((a,b)=>b.date.localeCompare(a.date));
   return `<div style="padding:4px">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <h3 style="font-size:18px;font-weight:700;color:var(--rb);font-family:'Rajdhani',sans-serif">My Work Log</h3>
     <button onclick="openAddWorkLog()" class="btn-sub" style="width:auto;padding:7px 14px;font-size:13px"><span class="mi" style="font-size:15px;vertical-align:middle">add</span> Add</button>
   </div>
   ${logs.length===0?'<div class="empty"><span class="mi">assignment</span><p>No logs yet.</p></div>':
-  `<div style="display:grid;gap:8px">${logs.slice(0,20).map(l=>`<div style="background:#fff;border-radius:10px;box-shadow:var(--cs);padding:12px"><div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="font-size:12px;font-weight:700;color:var(--rb)">${l.date}</span><span style="font-size:11px;color:var(--ok);font-weight:700">${l.hours||0} hrs</span></div><div style="font-size:13px">${l.work||'—'}</div>${l.site?`<div style="font-size:11px;color:var(--g400);margin-top:3px">📍 ${l.site}</div>`:''}${l.billId?`<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--g200);font-size:11px;display:flex;gap:10px;flex-wrap:wrap"><span>🧾 ₹${(l.billAmount||0).toLocaleString('en-IN')}</span><span style="color:var(--ok)">Received ₹${(l.billReceived||0).toLocaleString('en-IN')}</span><span style="color:${(l.billAmount||0)-(l.billReceived||0)>0?'var(--err)':'var(--ok)'}">Bal ₹${((l.billAmount||0)-(l.billReceived||0)).toLocaleString('en-IN')}</span></div>`:''}</div>`).join('')}</div>`}
+  `<div style="display:grid;gap:8px">${logs.slice(0,20).map(l=>`<div style="background:#fff;border-radius:10px;box-shadow:var(--cs);padding:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:12px;font-weight:700;color:var(--rb)">${l.date}</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--ok);font-weight:700">${l.hours||0} hrs</span><button onclick="deleteWorkLog(${l.id})" title="Delete" style="border:none;background:none;color:var(--err);cursor:pointer;padding:2px;display:flex;align-items:center"><span class="mi" style="font-size:17px">delete</span></button></div></div><div style="font-size:13px">${l.work||'—'}</div>${l.site?`<div style="font-size:11px;color:var(--g400);margin-top:3px">📍 ${l.site}</div>`:''}${l.billId?`<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--g200);font-size:11px;display:flex;gap:10px;flex-wrap:wrap"><span>🧾 ₹${(l.billAmount||0).toLocaleString('en-IN')}</span><span style="color:var(--ok)">Received ₹${(l.billReceived||0).toLocaleString('en-IN')}</span><span style="color:${(l.billAmount||0)-(l.billReceived||0)>0?'var(--err)':'var(--ok)'}">Bal ₹${((l.billAmount||0)-(l.billReceived||0)).toLocaleString('en-IN')}</span></div>`:''}</div>`).join('')}</div>`}
   </div>`;
+}
+async function deleteWorkLog(logId){
+  if(!(await customConfirm('Ye work log entry delete karni hai?')))return;
+  const i=workLogs.findIndex(l=>l.id===logId);
+  if(i<0)return;
+  workLogs.splice(i,1);
+  saveToStorage();
+  workerTab('worklog');
+  showToast('✓ Work log deleted','success');
 }
 async function openAddWorkLog(){
   const w=loggedInWorker;if(!w)return;
