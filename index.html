@@ -1961,7 +1961,7 @@ function setLang(l){
 // ═══════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════
-let currentRole='admin', punchedIn=false;
+let currentRole=null, punchedIn=false;
 let adminCurrentTab='dashboard', workerCurrentTab='home';
 
 let workers=[];
@@ -2665,11 +2665,6 @@ function tryAutoLogin(){
     // was currently viewing (e.g. Worker Profile, Workers tab) after any action
     // that triggers a save (saveToStorage schedules this indirectly via reload retries).
     if(currentRole){ return false; }
-    if(!workers || workers.length===0){
-      // Workers abhi load nahi hue — thoda wait karo
-      setTimeout(()=>{ tryAutoLogin(); }, 1500);
-      return false;
-    }
     const raw=localStorage.getItem(SESSION_KEY);
     if(!raw) return false;
     const sess=safeParse(raw);
@@ -2682,6 +2677,11 @@ function tryAutoLogin(){
       showToast('✓ Auto-login: Admin 🔓','success');
       return true;
     } else if(sess.role==='worker' && sess.workerId){
+      if(!workers || workers.length===0){
+        // Workers abhi load nahi hue — thoda wait karo (sirf worker session ke liye zaroori hai)
+        setTimeout(()=>{ tryAutoLogin(); }, 1500);
+        return false;
+      }
       const w=workers.find(x=>x.id===sess.workerId);
       if(w){ _enterWorkerScreen(w); showToast('✓ Welcome back, '+w.name+' 👷','success'); return true; }
     }
@@ -2752,11 +2752,9 @@ function updateLoginSyncStatus(){
   if(!bar)return;
   if(firebaseReady && firebaseDB){
     if(workers.length>0){
-      bar.style.display='flex';
-      bar.style.background='rgba(0,200,83,.15)';
-      bar.style.border='1px solid rgba(0,200,83,.4)';
-      bar.style.color='rgba(0,255,120,.9)';
-      bar.innerHTML='<span class="mi" style="font-size:16px">cloud_done</span> &nbsp;Firebase connected — '+workers.length+' workers loaded';
+      // Everything is working normally — no need to show technical sync details
+      // to employees on the login screen.
+      bar.style.display='none';
     } else {
       bar.style.display='flex';
       bar.style.background='rgba(255,152,0,.15)';
@@ -2797,7 +2795,7 @@ async function manualSyncLogin(){
 function logout(){
   clearSession();
   loggedInWorker=null;
-  currentRole='worker';
+  currentRole=null;
   punchedIn=false;
   showScreen('loginScreen');
   hideAdminCard();
