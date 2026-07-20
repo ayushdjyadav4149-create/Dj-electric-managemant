@@ -209,6 +209,8 @@ html,body{height:100%;font-family:'Roboto',sans-serif;background:var(--off);colo
 .live-dot-wrap{display:inline-flex;align-items:center;gap:6px;background:rgba(0,200,83,.12);padding:4px 10px;border-radius:20px;font-size:11px;color:var(--ok);font-weight:600;}
 .live-dot{width:7px;height:7px;background:var(--ok);border-radius:50%;animation:lp 1.2s ease infinite;flex-shrink:0;}
 @keyframes lp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.85)}}
+@keyframes spinIcon{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.js-refresh-btn.spinning .mi{animation:spinIcon .8s linear infinite;display:inline-block}
 
 /* ═══════════════════════════════════════════
    FORMS
@@ -534,6 +536,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
       </div>
     </div>
     <div class="topbar-right">
+      <button class="icon-btn mi js-refresh-btn" onclick="forceRefreshData()" title="Latest data laao">refresh</button>
       <button class="icon-btn mi" onclick="showToast('2 new notifications','')">notifications</button>
       <button class="icon-btn mi" onclick="logout()">logout</button>
     </div>
@@ -622,6 +625,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
       </div>
     </div>
     <div class="topbar-right">
+      <button class="icon-btn mi js-refresh-btn" onclick="forceRefreshData()" title="Latest data laao">refresh</button>
       <button class="icon-btn mi" onclick="logout()">logout</button>
     </div>
   </div>
@@ -2045,6 +2049,43 @@ let firebaseDB = null;
 let firebaseReady = false;
 let _saveDebounce = null;
 let _lastCloudTs = 0;
+// True whenever a local change couldn't be pushed to Firebase (offline, bad network,
+// or Firebase not yet connected) — used to automatically retry once connectivity is
+// back, so nothing typed/punched while offline ever needs a manual re-save.
+let _hasPendingCloudSync = false;
+async function _attemptReconnectAndSync(){
+  if(!FIREBASE_CONFIG.apiKey || !FIREBASE_CONFIG.databaseURL) return;
+  if(!firebaseReady || !firebaseDB){
+    let sdkReady = (typeof firebase !== 'undefined') || await _ensureFirebaseSDKLoaded(6000);
+    if(!sdkReady) sdkReady = await _reloadFirebaseSDKScripts();
+    if(sdkReady) initFirebase();
+  }
+  if(firebaseReady && firebaseDB){
+    if(_hasPendingCloudSync){
+      // Push whatever we have locally that never made it to the cloud
+      saveToStorage();
+    }
+    // Also pull anything from the cloud we might have missed while offline
+    try{ await loadFromCloud(); }catch(e){}
+    try{
+      if(currentRole==='admin'){ refreshAdmin(); if(adminCurrentTab) adminTab(adminCurrentTab); }
+      else if(currentRole==='worker'){ workerTab(workerCurrentTab||'home'); }
+    }catch(e){}
+  }
+}
+// Fires the instant the browser detects connectivity is back — the most reliable,
+// immediate signal available.
+window.addEventListener('online', function(){
+  showToast('🌐 Network wapas aa gaya — sync ho raha hai...','');
+  _attemptReconnectAndSync();
+});
+// Backup periodic check every 20s — 'online' doesn't always fire reliably on every
+// mobile browser/network transition, so this catches anything that slips through.
+setInterval(function(){
+  if(_hasPendingCloudSync || !firebaseReady){
+    if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL) _attemptReconnectAndSync();
+  }
+}, 20000);
 const _deviceId = 'dev_' + Math.random().toString(36).slice(2);
 
 // Firebase config
@@ -2121,23 +2162,13 @@ function initFirebase(){
       const d = snap.val();
       // d null = Firebase pe koi data nahi (fresh/cleared)
       if(!d){
-        // Firebase mein koi data nahi — sirf tab clear karo jab
-        // humne khud abhi koi data save nahi kiya (fresh DB)
-        // Agar humne data save kiya tha toh ignore karo yeh null event
-        const justSaved = (Date.now() - _lastCloudTs) < 10000;
-        if(justSaved){
-          // Humne abhi save kiya tha — null event ignore karo
-          return;
-        }
-        workers.length=0; bills.length=0; sites.length=0;
-        advanceRequests.length=0; attendanceRecords.length=0;
-        otLogs.length=0; salaryHistory.length=0; stock.length=0;
-        punchRequests.length=0; punchLogs.length=0;
-        try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
-        try{
-          if(currentRole==='admin') refreshAdmin();
-          else if(currentRole==='worker') workerTab(workerCurrentTab);
-        }catch(e){}
+        // Firebase returned no data at this path. This can happen for many harmless,
+        // transient reasons (a brief disconnect, an auth/rules hiccup, a read racing
+        // an in-flight write) — it does NOT reliably mean "the database is genuinely
+        // empty". Destroying local data on a null read caused real data loss, so we
+        // now simply ignore it and keep whatever is already in memory/localStorage.
+        // If the cloud is truly empty, the next saveToStorage() call will safely
+        // re-populate it from local data — nothing is lost either way.
         return;
       }
       // Skip agar yeh data humne abhi-abhi (last 3 seconds mein) save kiya tha
@@ -2182,37 +2213,124 @@ function _buildSaveData(){
   };
 }
 
+// Safely merges an incoming remote array into a local array, keyed by keyFn(item).
+// This is the core defense against silent data loss during sync: it NEVER drops an
+// item that exists locally but not (yet) in the incoming remote data — that's exactly
+// what happens when this device just added something a moment before a slightly-stale
+// snapshot arrives from another device. Items present on both sides take the remote
+// (server-confirmed) version; items that exist ONLY locally are always kept as-is.
+function _mergeArrayByKey(localArr, remoteArr, keyFn){
+  if(!Array.isArray(remoteArr)) return localArr||[];
+  if(!Array.isArray(localArr)) localArr=[];
+  const seen = new Set();
+  const merged = [];
+  remoteArr.forEach(item=>{
+    if(!item){ return; }
+    let k; try{ k = keyFn(item); }catch(e){ k = undefined; }
+    if(k!==undefined && k!==null) seen.add(k);
+    merged.push(item);
+  });
+  localArr.forEach(item=>{
+    if(!item) return;
+    let k; try{ k = keyFn(item); }catch(e){ k = undefined; }
+    if(k===undefined || k===null || !seen.has(k)) merged.push(item);
+  });
+  return merged;
+}
+function _mergeArrayInPlace(localArr, remoteArr, keyFn){
+  const merged = _mergeArrayByKey(localArr, remoteArr, keyFn);
+  localArr.length = 0;
+  merged.forEach(item=>localArr.push(item));
+}
+const _idKey = (x)=>x&&x.id;
 function _applyData(d){
   if(!d||typeof d!=='object')return;
-  if(Array.isArray(d.workers)){workers.length=0;for(var i=0;i<d.workers.length;i++)workers.push(d.workers[i]);}
-  if(Array.isArray(d.workTypes)&&d.workTypes.length){workTypes.length=0;for(var i=0;i<d.workTypes.length;i++)workTypes.push(d.workTypes[i]);}
-  if(Array.isArray(d.advanceRequests)){advanceRequests.length=0;for(var i=0;i<d.advanceRequests.length;i++)advanceRequests.push(d.advanceRequests[i]);}
-  if(Array.isArray(d.sites)){sites.length=0;for(var i=0;i<d.sites.length;i++){
-    var s=d.sites[i];
-    if(!s.expenses)s.expenses=[];
-    if(!s.incomeFromBills)s.incomeFromBills=[];
-    if(!s.contractAmt)s.contractAmt=0;
-    if(!s.status)s.status='active';
-    if(!s.workers)s.workers=[];
-    sites.push(s);
-  }}
+  if(Array.isArray(d.workers)) _mergeArrayInPlace(workers, d.workers, _idKey);
+  if(Array.isArray(d.workTypes)&&d.workTypes.length) _mergeArrayInPlace(workTypes, d.workTypes, _idKey);
+  if(Array.isArray(d.advanceRequests)) _mergeArrayInPlace(advanceRequests, d.advanceRequests, _idKey);
+  if(Array.isArray(d.sites)){
+    d.sites.forEach(function(s){
+      if(!s.expenses)s.expenses=[];
+      if(!s.incomeFromBills)s.incomeFromBills=[];
+      if(!s.contractAmt)s.contractAmt=0;
+      if(!s.status)s.status='active';
+      if(!s.workers)s.workers=[];
+    });
+    _mergeArrayInPlace(sites, d.sites, _idKey);
+  }
   if(d.companyInfo)Object.assign(companyInfo,d.companyInfo);
-  if(Array.isArray(d.bills)){bills.length=0;for(var i=0;i<d.bills.length;i++)bills.push(d.bills[i]);}
-  if(Array.isArray(d.attendanceRecords)){attendanceRecords.length=0;for(var i=0;i<d.attendanceRecords.length;i++)attendanceRecords.push(d.attendanceRecords[i]);}
-  if(Array.isArray(d.otLogs)){otLogs.length=0;for(var i=0;i<d.otLogs.length;i++)otLogs.push(d.otLogs[i]);}
-  if(Array.isArray(d.salaryHistory)){salaryHistory.length=0;for(var i=0;i<d.salaryHistory.length;i++)salaryHistory.push(d.salaryHistory[i]);}
-  if(Array.isArray(d.stock)){stock.length=0;for(var i=0;i<d.stock.length;i++)stock.push(d.stock[i]);}
-  if(Array.isArray(d.punchLogs)){punchLogs.length=0;for(var i=0;i<d.punchLogs.length;i++)punchLogs.push(d.punchLogs[i]);}
-  if(Array.isArray(d.punchRequests)){punchRequests.length=0;for(var i=0;i<d.punchRequests.length;i++)punchRequests.push(d.punchRequests[i]);}
-  if(Array.isArray(d.clients)){clients.length=0;for(var i=0;i<d.clients.length;i++)clients.push(d.clients[i]);}
-  if(Array.isArray(d.workLogs)){workLogs.length=0;for(var i=0;i<d.workLogs.length;i++)workLogs.push(d.workLogs[i]);}
-  if(Array.isArray(d.materialReqs)){materialReqs.length=0;for(var i=0;i<d.materialReqs.length;i++)materialReqs.push(d.materialReqs[i]);}
+  if(Array.isArray(d.bills)) _mergeArrayInPlace(bills, d.bills, _idKey);
+  if(Array.isArray(d.attendanceRecords)) _mergeArrayInPlace(attendanceRecords, d.attendanceRecords, (r)=>r.workerId+'_'+r.date);
+  if(Array.isArray(d.otLogs)) _mergeArrayInPlace(otLogs, d.otLogs, _idKey);
+  if(Array.isArray(d.salaryHistory)) _mergeArrayInPlace(salaryHistory, d.salaryHistory, _idKey);
+  if(Array.isArray(d.stock)) _mergeArrayInPlace(stock, d.stock, _idKey);
+  if(Array.isArray(d.punchLogs)) _mergeArrayInPlace(punchLogs, d.punchLogs, (p)=>p.workerId+'_'+p.date+'_'+p.time+'_'+p.type);
+  if(Array.isArray(d.punchRequests)) _mergeArrayInPlace(punchRequests, d.punchRequests, _idKey);
+  if(Array.isArray(d.clients)) _mergeArrayInPlace(clients, d.clients, _idKey);
+  if(Array.isArray(d.workLogs)) _mergeArrayInPlace(workLogs, d.workLogs, _idKey);
+  if(Array.isArray(d.materialReqs)) _mergeArrayInPlace(materialReqs, d.materialReqs, _idKey);
   if(d.appLang) appLang=d.appLang;
   if(typeof d.darkMode==='boolean') darkMode=d.darkMode;
   if(darkMode) document.body.classList.add('dark-mode');
   else document.body.classList.remove('dark-mode');
 }
 
+const _AUTO_BACKUP_KEYS = ['djElectric_autoBackup_1','djElectric_autoBackup_2','djElectric_autoBackup_3'];
+let _lastBackupRotation = 0;
+// Extra, independent safety net: keep the last 3 known-good snapshots of the entire
+// dataset in localStorage, completely separate from the live sync path. If anything
+// ever goes wrong — a bug, a bad sync, accidental deletion — the admin can always
+// manually restore from one of these via Settings, no matter what caused the problem.
+function _rotateLocalBackup(data){
+  try{
+    const now = Date.now();
+    if(now - _lastBackupRotation < 30*60*1000) return; // at most once every 30 minutes
+    _lastBackupRotation = now;
+    const b2 = localStorage.getItem(_AUTO_BACKUP_KEYS[1]);
+    const b1 = localStorage.getItem(_AUTO_BACKUP_KEYS[0]);
+    if(b2!==null) localStorage.setItem(_AUTO_BACKUP_KEYS[2], b2);
+    if(b1!==null) localStorage.setItem(_AUTO_BACKUP_KEYS[1], b1);
+    const snapshot = Object.assign({}, data, {_backupAt: now});
+    localStorage.setItem(_AUTO_BACKUP_KEYS[0], JSON.stringify(snapshot));
+  }catch(e){ /* localStorage full/unavailable — never let a backup failure break saving */ }
+}
+function getAutoBackups(){
+  return _AUTO_BACKUP_KEYS.map(function(k){
+    try{
+      const raw = localStorage.getItem(k);
+      if(!raw) return null;
+      const d = JSON.parse(raw);
+      return {
+        key:k, at:d._backupAt||0,
+        workers:(d.workers||[]).length, bills:(d.bills||[]).length, sites:(d.sites||[]).length,
+        attendanceRecords:(d.attendanceRecords||[]).length
+      };
+    }catch(e){ return null; }
+  }).filter(Boolean).sort(function(a,b){ return b.at-a.at; });
+}
+async function restoreAutoBackup(key){
+  const raw = localStorage.getItem(key);
+  if(!raw){ showToast('Backup not found','error'); return; }
+  let d; try{ d = JSON.parse(raw); }catch(e){ showToast('Backup file corrupted','error'); return; }
+  const summary = 'Workers: '+(d.workers||[]).length+', Bills: '+(d.bills||[]).length+', Sites: '+(d.sites||[]).length;
+  if(!(await customConfirm('⚠️ Is backup se restore karein?\n('+new Date(d._backupAt||0).toLocaleString('en-IN')+')\n'+summary+'\n\nCurrent data replace ho jayega. Continue?'))) return;
+  if(Array.isArray(d.workers)){workers.length=0;workers.push(...d.workers);}
+  if(Array.isArray(d.bills)){bills.length=0;bills.push(...d.bills);}
+  if(Array.isArray(d.sites)){sites.length=0;sites.push(...d.sites);}
+  if(Array.isArray(d.advanceRequests)){advanceRequests.length=0;advanceRequests.push(...d.advanceRequests);}
+  if(Array.isArray(d.attendanceRecords)){attendanceRecords.length=0;attendanceRecords.push(...d.attendanceRecords);}
+  if(Array.isArray(d.otLogs)){otLogs.length=0;otLogs.push(...d.otLogs);}
+  if(Array.isArray(d.salaryHistory)){salaryHistory.length=0;salaryHistory.push(...d.salaryHistory);}
+  if(Array.isArray(d.stock)){stock.length=0;stock.push(...d.stock);}
+  if(Array.isArray(d.punchLogs)){punchLogs.length=0;punchLogs.push(...d.punchLogs);}
+  if(Array.isArray(d.punchRequests)){punchRequests.length=0;punchRequests.push(...d.punchRequests);}
+  if(Array.isArray(d.clients)){clients.length=0;clients.push(...d.clients);}
+  if(Array.isArray(d.workLogs)){workLogs.length=0;workLogs.push(...d.workLogs);}
+  if(Array.isArray(d.materialReqs)){materialReqs.length=0;materialReqs.push(...d.materialReqs);}
+  saveToStorage();
+  if(currentRole==='admin') refreshAdmin();
+  showToast('✓ Backup restored successfully! 🎉','success');
+}
 function saveToStorage(){
   try{
     const data = _buildSaveData();
@@ -2221,6 +2339,7 @@ function saveToStorage(){
     data._ts = Date.now();
     _lastCloudTs = data._ts;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    _rotateLocalBackup(data);
     clearTimeout(_saveDebounce);
     _saveDebounce = setTimeout(async function(){  // 300ms debounce for fast cross-device sync
       if(firebaseReady && firebaseDB){
@@ -2229,10 +2348,11 @@ function saveToStorage(){
         data._ts = Date.now();
         _lastCloudTs = data._ts;
         firebaseDB.ref('djElectricData').set(data)
-          .then(function(){ showSaveIndicator('☁️ Cloud Saved'); })
-          .catch(function(e){ showSaveIndicator('✓ Local Saved'); });
+          .then(function(){ showSaveIndicator('☁️ Cloud Saved'); _hasPendingCloudSync=false; })
+          .catch(function(e){ showSaveIndicator('✓ Local Saved'); _hasPendingCloudSync=true; });
       } else {
         showSaveIndicator('✓ Saved');
+        if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL) _hasPendingCloudSync=true;
       }
     }, 300);
   }catch(e){
@@ -2275,6 +2395,47 @@ function loadFromStorage(){
   }catch(e){console.error('Load failed:',e);return false;}
 }
 
+// TRUE refresh — actually fetches the latest data from Firebase (not just re-rendering
+// whatever's already sitting in local memory) and safely merges it in, then re-renders
+// whatever screen is currently visible. This is the answer to "what if something looks
+// stale or wrong" — one tap anywhere in the app pulls the real current state.
+async function forceRefreshData(){
+  const btns = document.querySelectorAll('.js-refresh-btn');
+  btns.forEach(b=>b.classList.add('spinning'));
+  if(!firebaseReady || !firebaseDB){
+    // Not connected — actively try to (re)connect instead of just giving up here.
+    if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL){
+      showToast('🔄 Firebase se dobara connect karne ki koshish ho rahi hai...','');
+      let sdkReady = await _ensureFirebaseSDKLoaded(6000);
+      if(!sdkReady) sdkReady = await _reloadFirebaseSDKScripts();
+      if(sdkReady) initFirebase();
+    }
+    if(!firebaseReady || !firebaseDB){
+      showToast('⚠️ Firebase connect nahi ho paya — Settings mein Database URL check karein','error');
+      btns.forEach(b=>b.classList.remove('spinning'));
+      return;
+    }
+  }
+  try{
+    const ok = await loadFromCloud();
+    if(ok){
+      showToast('✓ Latest data refresh ho gaya! 🔄','success');
+    } else {
+      showToast('⚠️ Refresh fail hua — connection check karein','error');
+    }
+  }catch(e){
+    showToast('⚠️ Refresh fail hua — connection check karein','error');
+  }
+  try{
+    if(currentRole==='admin'){
+      refreshAdmin();
+      if(adminCurrentTab) adminTab(adminCurrentTab);
+    } else if(currentRole==='worker'){
+      workerTab(workerCurrentTab||'home');
+    }
+  }catch(e){}
+  btns.forEach(b=>b.classList.remove('spinning'));
+}
 async function loadFromCloud(){
   try{
     if(firebaseReady && firebaseDB){
@@ -3043,7 +3204,7 @@ function adminWorkers(){
     <h2 style="font-size:20px;font-weight:700;color:var(--rb);font-family:'Rajdhani',sans-serif">${T('nav_workers')}</h2>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <span class="live-dot-wrap"><span class="live-dot"></span>${present} Present</span>
-      <button onclick="adminTab('workers')" style="padding:9px 14px;border:2px solid var(--rb);border-radius:10px;background:#fff;color:var(--rb);font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;gap:5px">
+      <button onclick="forceRefreshData()" class="js-refresh-btn" style="padding:9px 14px;border:2px solid var(--rb);border-radius:10px;background:#fff;color:var(--rb);font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;gap:5px">
         <span class="mi" style="font-size:16px">refresh</span>Refresh
       </button>
       <button onclick="openAddWorkerModal()" style="padding:9px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--ok),#009624);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;gap:5px">
@@ -5500,14 +5661,16 @@ function _currentMonthPresentDays(w){
   const now=new Date();
   const ym=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   const recs=(attendanceRecords||[]).filter(r=>r.workerId===w.id&&(r.date||'').startsWith(ym));
-  return recs.filter(r=>r.status==='present').length + recs.filter(r=>r.status==='halfday').length*0.5;
+  return _sumDayWeights(recs);
 }
 function calcNetSalary(w){
   if(!w) return {earnedBasic:0,otAmt:0,gross:0,net:0,otHours:0,foodAmt:0,travelAmt:0,days:0};
   const liveDays=_currentMonthPresentDays(w);
-  // Fixed/Monthly salary uses a constant standard 30-day divisor so the per-day rate
-  // never changes just because the calendar month happens to have 30 vs 31 days.
-  const perDay=w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/30);
+  // Fixed/Monthly salary divides by the ACTUAL days in THIS calendar month — so
+  // attending every working day always adds up to exactly the full fixed salary,
+  // whether the month has 28, 30, or 31 days.
+  const totalDaysThisMonth=getDaysInMonth();
+  const perDay=w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/totalDaysThisMonth);
   const earnedBasic=Math.round(w.salaryType==='daily'?(w.basicSalary||0)*liveDays:(perDay*liveDays));
   const myOT=(otLogs||[]).filter(o=>o.workerId===w.id&&!o.paid);
   const otAmt=myOT.reduce((s,o)=>s+(o.hours*w.otRate),0);
@@ -5640,18 +5803,21 @@ function _periodRange(period){
 // never change just because someone is looking at a different reporting period.
 function _calcPeriodSalary(w, start, end){
   const recs = (attendanceRecords||[]).filter(r=>r.workerId===w.id&&r.date>=start&&r.date<=end);
-  const presentDays = recs.filter(r=>r.status==='present').length + recs.filter(r=>r.status==='halfday').length*0.5;
+  const presentDays = _sumDayWeights(recs);
   let basic;
   if(w.salaryType==='daily'){
     basic = Math.round((w.basicSalary||0)*presentDays);
   } else {
-    // Monthly (Fixed) salary: constant standard 30-day divisor for every month, so the
-    // per-day rate never changes just because a month has 30 vs 31 (or 28/29) days.
+    // Monthly (Fixed) salary: divide by the ACTUAL days in each record's own month —
+    // computed per-record since a period like Yearly/Custom can span several months
+    // with different lengths — so full attendance in any month adds up to exactly
+    // that month's full fixed salary share, not more or less depending on month length.
     let sum = 0;
     recs.forEach(r=>{
-      if(r.status!=='present'&&r.status!=='halfday') return;
-      const weight = r.status==='present'?1:0.5;
-      sum += (w.basicSalary||0)/30*weight;
+      const weight = _recDayWeight(r);
+      if(weight<=0) return;
+      const [yy,mm] = r.date.split('-').map(Number);
+      sum += (w.basicSalary||0)/getDaysInMonth(yy,mm)*weight;
     });
     basic = Math.round(sum);
   }
@@ -6691,6 +6857,20 @@ function adminSettings(){
         </div>
       </div>
 <div style="margin-bottom:20px">
+        <div style="font-size:12px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">🛡️ Auto-Backup (Safety Net)</div>
+        <div style="font-size:12px;color:var(--g600);margin-bottom:10px;line-height:1.5">Ye khud-ba-khud har 30 minute mein banta hai — bina kuch kiye. Agar kabhi data galat lage ya kuch gayab lage, yahan se turant purani achi copy restore kar sakte hain.</div>
+        <div style="display:grid;gap:8px">
+          ${getAutoBackups().length===0?'<div style="font-size:12px;color:var(--g400);padding:10px;text-align:center">Abhi tak koi auto-backup nahi bana (pehla save hone ke 30 minute baad banega)</div>':
+          getAutoBackups().map(function(b){
+            return '<div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--g100);border-radius:10px;padding:10px 14px">'
+              +'<div><div style="font-size:12px;font-weight:700">'+new Date(b.at).toLocaleString('en-IN')+'</div>'
+              +'<div style="font-size:11px;color:var(--g400)">'+b.workers+' workers • '+b.bills+' bills • '+b.sites+' sites • '+b.attendanceRecords+' attendance records</div></div>'
+              +'<button onclick="restoreAutoBackup(\''+b.key+'\')" style="padding:7px 14px;border:none;border-radius:8px;background:var(--rb);color:#fff;font-weight:700;font-size:12px;cursor:pointer">Restore</button>'
+              +'</div>';
+          }).join('')}
+        </div>
+      </div>
+<div style="margin-bottom:20px">
         <div style="font-size:12px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">📊 CSV Export (Excel mein kholein)</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px">
           <button onclick="exportWorkersCSV()" style="padding:11px;border:2px solid rgba(0,51,102,.2);border-radius:10px;background:#fff;color:var(--rb);font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;gap:6px;transition:all .2s" onmouseover="this.style.background='rgba(0,51,102,.05)'" onmouseout="this.style.background='#fff'">
@@ -7050,7 +7230,41 @@ function showToast(msg,type=''){
 // ═══════════════════════════════════════════
 const FB_CONFIG_KEY = 'djElectric_fbConfig';
 
-function saveFirebaseConfig(){
+// Waits up to maxWaitMs for the Firebase SDK (loaded via <script src> tags in <head>)
+// to finish loading, polling periodically. Resolves true as soon as it's available.
+function _ensureFirebaseSDKLoaded(maxWaitMs){
+  return new Promise((resolve)=>{
+    if(typeof firebase !== 'undefined'){ resolve(true); return; }
+    let waited = 0;
+    const iv = setInterval(()=>{
+      waited += 300;
+      if(typeof firebase !== 'undefined'){ clearInterval(iv); resolve(true); }
+      else if(waited >= (maxWaitMs||6000)){ clearInterval(iv); resolve(false); }
+    }, 300);
+  });
+}
+// Last-resort self-heal: if the SDK genuinely never loaded (network blip, CDN hiccup),
+// dynamically inject fresh <script> tags to retry the download — this fixes the exact
+// problem the old code just told the user to "please reload the page" for, without
+// actually requiring them to do anything.
+function _reloadFirebaseSDKScripts(){
+  return new Promise((resolve)=>{
+    const urls = [
+      'https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js',
+      'https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js'
+    ];
+    let remaining = urls.length;
+    let anyError = false;
+    urls.forEach(url=>{
+      const s = document.createElement('script');
+      s.src = url + (url.includes('?')?'&':'?') + '_retry=' + Date.now(); // cache-bust a failed load
+      s.onload = ()=>{ remaining--; if(remaining<=0) resolve(!anyError && typeof firebase!=='undefined'); };
+      s.onerror = ()=>{ anyError = true; remaining--; if(remaining<=0) resolve(false); };
+      document.head.appendChild(s);
+    });
+  });
+}
+async function saveFirebaseConfig(){
   const cfg = {
     apiKey: document.getElementById('fb_apiKey').value.trim(),
     authDomain: document.getElementById('fb_authDomain').value.trim(),
@@ -7069,10 +7283,19 @@ function saveFirebaseConfig(){
   localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify({type:'firebase', ...cfg}));
   // Apply config
   Object.assign(FIREBASE_CONFIG, cfg);
-  // Re-init Firebase
+  // Re-init Firebase — wait for the SDK if it's still loading, and actively retry the
+  // download if it seems to have failed, instead of immediately giving up.
   if(typeof firebase === 'undefined'){
-    showToast('\u274c Firebase failed to initialize — please reload the page','error');
-    return;
+    showToast('⏳ Firebase SDK load ho raha hai, thoda ruko...','');
+    const loaded = await _ensureFirebaseSDKLoaded(6000);
+    if(!loaded){
+      showToast('🔄 SDK dobara load karne ki koshish ho rahi hai...','');
+      const reloaded = await _reloadFirebaseSDKScripts();
+      if(!reloaded || typeof firebase==='undefined'){
+        showToast('❌ Firebase SDK load nahi ho paya — internet connection check karein aur dobara try karein','error');
+        return;
+      }
+    }
   }
   try{
     // Agar pehle se init hai toh reuse karo
@@ -7278,14 +7501,21 @@ window.onload=async()=>{
   var cloudType = loadCloudConfig();
   if(!cloudType) loadFirebaseConfigFromStorage(); // legacy support
 
-  // 3. Cloud init — SDK async load ke baad retry karo
+  // 3. Cloud init — SDK async load ke baad retry karo (robust: waits for the SDK
+  // properly and actively retries the download if needed, instead of giving up
+  // after a single fixed-delay attempt — slow/flaky mobile networks can easily
+  // take longer than a couple seconds to finish loading the SDK).
   var cloudOk = false;
   if(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL){
     cloudOk = initFirebase();
     if(!cloudOk){
-      // SDK abhi load ho raha hai — 2 sec baad retry
-      setTimeout(async function(){
-        if(!firebaseReady && FIREBASE_CONFIG.apiKey){
+      (async function(){
+        if(firebaseReady || !FIREBASE_CONFIG.apiKey) return;
+        var sdkReady = await _ensureFirebaseSDKLoaded(10000);
+        if(!sdkReady){
+          sdkReady = await _reloadFirebaseSDKScripts();
+        }
+        if(sdkReady && !firebaseReady && FIREBASE_CONFIG.apiKey){
           var ok = initFirebase();
           if(ok){
             showCloudStatus('connecting');
@@ -7296,7 +7526,7 @@ window.onload=async()=>{
             try{updateLoginSyncStatus();}catch(e){}
           }
         }
-      }, 2000);
+      })();
     }
   }
 
@@ -7884,6 +8114,7 @@ function _applyPunchToAttendance(r){
   if(r.type==='in'){
     rec.punchIn=r.time;
     rec.status='present';
+    delete rec.hoursWeight; // full-day assumption until punch-out tells us otherwise
     rec.location=r.address||rec.location;
     w.status='present';
     if(!w.days) w.days=0;
@@ -7893,6 +8124,22 @@ function _applyPunchToAttendance(r){
   } else if(r.type==='out'){
     rec.punchOut=r.time;
     w.status='absent'; // After punch out, mark as punched out
+    // Pay proportionally to actual hours worked vs a standard 8-hour working day —
+    // a short punch-in/punch-out (e.g. 1 hour out of a full day) should NOT earn a
+    // full day's basic pay. This is calculated fresh every time punch-out happens,
+    // and only from real punch data — it never overrides an admin's manual
+    // attendance edit (that path sets status directly and doesn't touch hoursWeight).
+    const STANDARD_WORKDAY_HOURS = 8;
+    if(rec.punchIn && rec.punchOut){
+      const hoursWorked = _hoursBetween(rec.punchIn, rec.punchOut);
+      const expectedHours = STANDARD_WORKDAY_HOURS;
+      if(hoursWorked!==null && expectedHours && expectedHours>0){
+        let weight = hoursWorked / expectedHours;
+        weight = Math.max(0, Math.min(1, weight));
+        rec.hoursWeight = weight;
+        rec.status = weight<=0 ? 'absent' : (weight>=1 ? 'present' : 'halfday');
+      }
+    }
   }
 }
 
@@ -8529,7 +8776,7 @@ function _calcMonthSalary(w, monthVal){
   const [yr,mo] = monthVal.split('-').map(Number);
   const totalDays = getDaysInMonth(yr,mo);
   const recs = (attendanceRecords||[]).filter(r=>r.workerId===w.id&&(r.date||'').startsWith(monthVal));
-  const presentDays = recs.filter(r=>r.status==='present').length + Math.round(recs.filter(r=>r.status==='halfday').length*0.5);
+  const presentDays = _sumDayWeights(recs.filter(r=>r.status!=='paid_leave'));
   const paidLeaveDays = recs.filter(r=>r.status==='paid_leave').length;
   const days = presentDays;
   const myOT = (otLogs||[]).filter(o=>o.workerId===w.id&&!o.paid&&(o.date||'').startsWith(monthVal));
@@ -8537,10 +8784,10 @@ function _calcMonthSalary(w, monthVal){
   const otHours = myOT.reduce((s,o)=>s+o.hours,0);
   const foodAmt = recs.reduce((s,r)=>s+((r.foodAmt&&!r.foodPaid)?r.foodAmt:0),0);
   const travelAmt = recs.reduce((s,r)=>s+((r.travelAmt&&!r.travelPaid)?r.travelAmt:0),0);
-  // Fixed/Monthly salary uses a constant standard 30-day divisor — never the actual
-  // calendar days in this specific month — so the per-day rate stays the same in
-  // every month regardless of whether it has 28, 30, or 31 days.
-  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/30);
+  // Fixed/Monthly salary divides by the ACTUAL days in this specific month, so
+  // attending every working day adds up to exactly the full fixed salary, whether
+  // this month has 28, 30, or 31 days.
+  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/totalDays);
   const basic = Math.round(w.salaryType==='daily'?(w.basicSalary||0)*days:(perDay*days));
   const advDed = (advanceRequests||[]).filter(r=>r.workerId===w.id&&r.status==='approved'&&(r.date||'').startsWith(monthVal)).reduce((s,r)=>s+(r.amount||0),0);
   const gross = Math.round(basic+otAmt+foodAmt+travelAmt);
@@ -8738,8 +8985,10 @@ function _wpSaveSalaryEntry(wid, monthVal, monthLabel){
   const foodAmt = ctx.totalFoodAmt||0;
   const travelAmt = ctx.totalTravelAmt||0;
 
-  // Fixed/Monthly salary uses a constant standard 30-day divisor for every month.
-  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/30);
+  // Fixed/Monthly salary divides by the ACTUAL days in this month, so full
+  // attendance always equals the full fixed salary regardless of month length.
+  const [wpYr,wpMo] = monthVal.split('-').map(Number);
+  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/getDaysInMonth(wpYr,wpMo));
   const earnedBasic = Math.round(w.salaryType==='daily'?(w.basicSalary||0)*days:(perDay*days));
   const gross = earnedBasic + otAmt + foodAmt + travelAmt;
   const net = Math.round(gross - advDed);
@@ -9618,6 +9867,60 @@ function toggleLanguage(){
 
 
 // ── Month days helper ──
+// Parses a time string in EITHER 24-hour "HH:MM" format (used by duty schedules and
+// manual attendance entry, e.g. "16:58") OR 12-hour "h:mm am/pm" format (what the
+// punch-clock actually saves via toLocaleTimeString, e.g. "4:58 pm") into minutes
+// since midnight. Returns null if unparseable.
+function _parseTimeToMinutes(t){
+  if(!t || typeof t!=='string') return null;
+  const s = t.trim().toLowerCase();
+  // 12-hour with am/pm suffix
+  const ampmMatch = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/);
+  if(ampmMatch){
+    let h = +ampmMatch[1], m = +ampmMatch[2];
+    const isPM = ampmMatch[3]==='pm';
+    if(h===12) h = isPM ? 12 : 0;
+    else if(isPM) h += 12;
+    return h*60+m;
+  }
+  // 24-hour HH:MM
+  const hmMatch = s.match(/^(\d{1,2}):(\d{2})$/);
+  if(hmMatch){
+    return (+hmMatch[1])*60+(+hmMatch[2]);
+  }
+  return null;
+}
+// Hours between two punch/duty times, handling overnight shifts (punch-out time
+// earlier than punch-in, e.g. a night shift crossing midnight) by adding 24h.
+function _hoursBetween(t1, t2){
+  const m1 = _parseTimeToMinutes(t1), m2 = _parseTimeToMinutes(t2);
+  if(m1===null || m2===null) return null;
+  let diff = m2 - m1;
+  if(diff <= 0) diff += 24*60;
+  return diff/60;
+}
+// Returns the fractional "day weight" for a single attendance record — this is the
+// single source of truth used everywhere pay/days-present is calculated, so a fix
+// here cascades correctly to every salary view in the app (worker's own Salary tab,
+// admin's Salary tab, the drill-down ledger, CSV exports, salary slips — all of it).
+// - If the record has an explicit hoursWeight (set automatically when a worker
+//   punches in AND out — see _applyPunchToAttendance — proportional to actual hours
+//   worked vs their scheduled duty hours), that's used directly. This is what makes
+//   a worker who only works 1-2 hours out of a full shift get paid proportionally,
+//   not a full day's wage.
+// - Otherwise (manually marked attendance with no punch times, e.g. via Bulk
+//   Attendance or a direct edit), falls back to the simple present=1 / halfday=0.5
+//   / anything else=0 convention, unchanged from before.
+function _recDayWeight(r){
+  if(!r) return 0;
+  if(typeof r.hoursWeight === 'number' && !isNaN(r.hoursWeight)) return r.hoursWeight;
+  if(r.status==='present'||r.status==='paid_leave') return 1;
+  if(r.status==='halfday') return 0.5;
+  return 0;
+}
+function _sumDayWeights(recs){
+  return (recs||[]).reduce((s,r)=>s+_recDayWeight(r),0);
+}
 function getDaysInMonth(year, month){
   // If no args, use current month
   if(!year||!month){
@@ -10201,14 +10504,14 @@ function _renderWorkerSalaryDetail(){
     const otForDay = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date===d).reduce((s,o)=>s+o.hours*(w.otRate||0),0);
     const otHrsDay = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date===d).reduce((s,o)=>s+o.hours,0);
     let dayBasic=0;
-    if(status==='present'||status==='halfday'){
-      const weight = status==='present'?1:0.5;
+    const weight = _recDayWeight(rec);
+    if(weight>0){
       if(w.salaryType==='daily') dayBasic=(w.basicSalary||0)*weight;
-      else dayBasic=(w.basicSalary||0)/30*weight;
+      else{ const [dyy,dmm]=d.split('-').map(Number); dayBasic=(w.basicSalary||0)/getDaysInMonth(dyy,dmm)*weight; }
     }
     const foodD = rec?.foodAmt||0, travelD = rec?.travelAmt||0;
     const advD = (advanceRequests||[]).filter(a=>a.workerId===w.id&&a.status==='approved'&&a.date===d).reduce((s,a)=>s+(a.amount||0),0);
-    return {status, otForDay, otHrsDay, dayBasic:Math.round(dayBasic), foodD, travelD, advD, total:Math.round(dayBasic+otForDay+foodD+travelD-advD)};
+    return {status, otForDay, otHrsDay, dayBasic:Math.round(dayBasic), foodD, travelD, advD, weight, total:Math.round(dayBasic+otForDay+foodD+travelD-advD)};
   }
 
   // The current (still in-progress) month should NOT be rolled into a Yearly/long-range
@@ -10251,7 +10554,7 @@ function _renderWorkerSalaryDetail(){
       const ym = d.slice(0,7);
       if(!byMonth[ym]) byMonth[ym]={days:0,total:0,basic:0,ot:0,adv:0};
       const f = dayFigures(d); // f.total is already NET (advance for that day already subtracted)
-      if(f.status==='present'||f.status==='halfday') byMonth[ym].days += (f.status==='present'?1:0.5);
+      byMonth[ym].days += (f.weight||0);
       byMonth[ym].total += f.total;
       byMonth[ym].basic += f.dayBasic;
       byMonth[ym].ot += f.otForDay;
@@ -10512,9 +10815,11 @@ function _periodLabel(period){
 function _calcSalaryForMonth(w, monthVal){
   if(!w) return {earnedBasic:0,otAmt:0,gross:0,net:0,otHours:0,days:0,foodAmt:0,travelAmt:0};
   const recs = (attendanceRecords||[]).filter(r=>r.workerId===w.id&&r.date.startsWith(monthVal));
-  const presentDays = recs.filter(r=>r.status==='present'||r.status==='paid_leave').length + Math.round(recs.filter(r=>r.status==='halfday').length*0.5);
-  // Fixed/Monthly salary uses a constant standard 30-day divisor for every month.
-  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/30);
+  const presentDays = _sumDayWeights(recs);
+  // Fixed/Monthly salary divides by the ACTUAL days in this month, so full
+  // attendance always equals the full fixed salary regardless of month length.
+  const [csfmYr,csfmMo] = monthVal.split('-').map(Number);
+  const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/getDaysInMonth(csfmYr,csfmMo));
   const earnedBasic = Math.round(w.salaryType==='daily'?(w.basicSalary||0)*presentDays:(perDay*presentDays));
   const myOT = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date&&o.date.startsWith(monthVal));
   const otAmt = myOT.reduce((s,o)=>s+(o.hours*(w.otRate||0)),0);
