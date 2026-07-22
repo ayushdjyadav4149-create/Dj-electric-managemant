@@ -1037,17 +1037,17 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
     <input type="hidden" id="epr_id">
     <div class="row2">
       <div class="fg"><label class="lbl">Punch Type</label>
-        <select class="sel" id="epr_type">
+        <select class="sel" id="epr_type" onchange="_eprRecalcAndShowPreview(true)">
           <option value="in">Punch In</option>
           <option value="out">Punch Out</option>
         </select>
       </div>
       <div class="fg"><label class="lbl">Date</label>
-        <input type="date" class="inp" id="epr_date">
+        <input type="date" class="inp" id="epr_date" onchange="_eprRecalcAndShowPreview(true)">
       </div>
     </div>
     <div class="fg"><label class="lbl">Time</label>
-      <select class="sel" id="epr_time" style="max-height:220px"></select>
+      <select class="sel" id="epr_time" style="max-height:220px" onchange="_eprRecalcAndShowPreview(true)"></select>
     </div>
     <div class="fg"><label class="lbl">Location / Address</label>
       <input type="text" class="inp" id="epr_address" placeholder="Location...">
@@ -1072,6 +1072,13 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
             <option value="Other">Other</option>
           </select>
         </div>
+      </div>
+    </div>
+    <div id="eprHoursPreview" style="display:none;background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⏱ Hours & Pay Preview</div>
+      <div id="eprHoursText" style="font-size:12px;color:var(--g600);margin-bottom:10px"></div>
+      <div class="fg" style="margin-bottom:0"><label class="lbl">OT Hours (auto-calculated — edit if needed)</label>
+        <input type="number" class="inp" id="epr_ot_hours" min="0" step="0.25" value="0" oninput="_eprRecalcAndShowPreview(false)">
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -1969,6 +1976,22 @@ let currentRole=null, punchedIn=false;
 let adminCurrentTab='dashboard', workerCurrentTab='home';
 
 let workers=[];
+// Tombstones: records explicit deletions as "type:id" -> deletion timestamp, and syncs
+// across devices just like everything else. A tombstoned item is excluded from every
+// merge (whether it's still sitting in a stale remote snapshot or a stale local copy),
+// so an explicit delete always sticks — it can't be silently un-done by a sync event
+// that just hasn't caught up to the deletion yet.
+let deletedTombstones = {};
+function _markDeleted(type, id){
+  if(id===undefined || id===null) return;
+  deletedTombstones[type+':'+id] = Date.now();
+  // Prune tombstones older than 90 days so this doesn't grow forever
+  const cutoff = Date.now() - 90*24*60*60*1000;
+  Object.keys(deletedTombstones).forEach(k=>{ if(deletedTombstones[k] < cutoff) delete deletedTombstones[k]; });
+}
+function _isTombstoned(type, id){
+  return Object.prototype.hasOwnProperty.call(deletedTombstones, type+':'+id);
+}
 function isActiveWorker(w){return !!w && w.active!==false;}
 function activeWorkers(){return (workers||[]).filter(isActiveWorker);}
 let workTypes=[
@@ -2209,7 +2232,7 @@ function _buildSaveData(){
     _v:2, _savedBy:_deviceId, _ts:Date.now(),
     workers:cleanWorkers||[], workTypes:workTypes||[], advanceRequests:advanceRequests||[],
     sites:sites||[], companyInfo:cleanCompany||{}, bills:bills||[], attendanceRecords:attendanceRecords||[],
-    otLogs:otLogs||[], salaryHistory:salaryHistory||[], stock:stock||[], punchLogs:punchLogs||[], punchRequests:punchRequests||[], clients:clients||[], workLogs:workLogs||[], materialReqs:materialReqs||[], appLang:appLang||'en', darkMode:darkMode||false
+    otLogs:otLogs||[], salaryHistory:salaryHistory||[], stock:stock||[], punchLogs:punchLogs||[], punchRequests:punchRequests||[], clients:clients||[], workLogs:workLogs||[], materialReqs:materialReqs||[], appLang:appLang||'en', darkMode:darkMode||false, deletedTombstones:deletedTombstones||{}
   };
 }
 
@@ -2219,35 +2242,48 @@ function _buildSaveData(){
 // what happens when this device just added something a moment before a slightly-stale
 // snapshot arrives from another device. Items present on both sides take the remote
 // (server-confirmed) version; items that exist ONLY locally are always kept as-is.
-function _mergeArrayByKey(localArr, remoteArr, keyFn){
+function _mergeArrayByKey(localArr, remoteArr, keyFn, tombstoneType){
   if(!Array.isArray(remoteArr)) return localArr||[];
   if(!Array.isArray(localArr)) localArr=[];
   const seen = new Set();
   const merged = [];
+  const isDeleted = (item)=>{
+    if(!tombstoneType) return false;
+    let k; try{ k = keyFn(item); }catch(e){ return false; }
+    return k!==undefined && k!==null && _isTombstoned(tombstoneType, k);
+  };
   remoteArr.forEach(item=>{
-    if(!item){ return; }
+    if(!item || isDeleted(item)){ return; }
     let k; try{ k = keyFn(item); }catch(e){ k = undefined; }
     if(k!==undefined && k!==null) seen.add(k);
     merged.push(item);
   });
   localArr.forEach(item=>{
-    if(!item) return;
+    if(!item || isDeleted(item)) return;
     let k; try{ k = keyFn(item); }catch(e){ k = undefined; }
     if(k===undefined || k===null || !seen.has(k)) merged.push(item);
   });
   return merged;
 }
-function _mergeArrayInPlace(localArr, remoteArr, keyFn){
-  const merged = _mergeArrayByKey(localArr, remoteArr, keyFn);
+function _mergeArrayInPlace(localArr, remoteArr, keyFn, tombstoneType){
+  const merged = _mergeArrayByKey(localArr, remoteArr, keyFn, tombstoneType);
   localArr.length = 0;
   merged.forEach(item=>localArr.push(item));
 }
 const _idKey = (x)=>x&&x.id;
 function _applyData(d){
   if(!d||typeof d!=='object')return;
-  if(Array.isArray(d.workers)) _mergeArrayInPlace(workers, d.workers, _idKey);
-  if(Array.isArray(d.workTypes)&&d.workTypes.length) _mergeArrayInPlace(workTypes, d.workTypes, _idKey);
-  if(Array.isArray(d.advanceRequests)) _mergeArrayInPlace(advanceRequests, d.advanceRequests, _idKey);
+  // Merge tombstones first (union — if EITHER side knows about a deletion, both should)
+  if(d.deletedTombstones && typeof d.deletedTombstones==='object'){
+    Object.keys(d.deletedTombstones).forEach(function(k){
+      if(!deletedTombstones[k] || d.deletedTombstones[k] > deletedTombstones[k]){
+        deletedTombstones[k] = d.deletedTombstones[k];
+      }
+    });
+  }
+  if(Array.isArray(d.workers)) _mergeArrayInPlace(workers, d.workers, _idKey, 'workers');
+  if(Array.isArray(d.workTypes)&&d.workTypes.length) _mergeArrayInPlace(workTypes, d.workTypes, _idKey, 'workTypes');
+  if(Array.isArray(d.advanceRequests)) _mergeArrayInPlace(advanceRequests, d.advanceRequests, _idKey, 'advanceRequests');
   if(Array.isArray(d.sites)){
     d.sites.forEach(function(s){
       if(!s.expenses)s.expenses=[];
@@ -2256,19 +2292,19 @@ function _applyData(d){
       if(!s.status)s.status='active';
       if(!s.workers)s.workers=[];
     });
-    _mergeArrayInPlace(sites, d.sites, _idKey);
+    _mergeArrayInPlace(sites, d.sites, _idKey, 'sites');
   }
   if(d.companyInfo)Object.assign(companyInfo,d.companyInfo);
-  if(Array.isArray(d.bills)) _mergeArrayInPlace(bills, d.bills, _idKey);
-  if(Array.isArray(d.attendanceRecords)) _mergeArrayInPlace(attendanceRecords, d.attendanceRecords, (r)=>r.workerId+'_'+r.date);
-  if(Array.isArray(d.otLogs)) _mergeArrayInPlace(otLogs, d.otLogs, _idKey);
-  if(Array.isArray(d.salaryHistory)) _mergeArrayInPlace(salaryHistory, d.salaryHistory, _idKey);
-  if(Array.isArray(d.stock)) _mergeArrayInPlace(stock, d.stock, _idKey);
+  if(Array.isArray(d.bills)) _mergeArrayInPlace(bills, d.bills, _idKey, 'bills');
+  if(Array.isArray(d.attendanceRecords)) _mergeArrayInPlace(attendanceRecords, d.attendanceRecords, (r)=>r.workerId+'_'+r.date, 'attendanceRecords');
+  if(Array.isArray(d.otLogs)) _mergeArrayInPlace(otLogs, d.otLogs, _idKey, 'otLogs');
+  if(Array.isArray(d.salaryHistory)) _mergeArrayInPlace(salaryHistory, d.salaryHistory, _idKey, 'salaryHistory');
+  if(Array.isArray(d.stock)) _mergeArrayInPlace(stock, d.stock, _idKey, 'stock');
   if(Array.isArray(d.punchLogs)) _mergeArrayInPlace(punchLogs, d.punchLogs, (p)=>p.workerId+'_'+p.date+'_'+p.time+'_'+p.type);
-  if(Array.isArray(d.punchRequests)) _mergeArrayInPlace(punchRequests, d.punchRequests, _idKey);
-  if(Array.isArray(d.clients)) _mergeArrayInPlace(clients, d.clients, _idKey);
-  if(Array.isArray(d.workLogs)) _mergeArrayInPlace(workLogs, d.workLogs, _idKey);
-  if(Array.isArray(d.materialReqs)) _mergeArrayInPlace(materialReqs, d.materialReqs, _idKey);
+  if(Array.isArray(d.punchRequests)) _mergeArrayInPlace(punchRequests, d.punchRequests, _idKey, 'punchRequests');
+  if(Array.isArray(d.clients)) _mergeArrayInPlace(clients, d.clients, _idKey, 'clients');
+  if(Array.isArray(d.workLogs)) _mergeArrayInPlace(workLogs, d.workLogs, _idKey, 'workLogs');
+  if(Array.isArray(d.materialReqs)) _mergeArrayInPlace(materialReqs, d.materialReqs, _idKey, 'materialReqs');
   if(d.appLang) appLang=d.appLang;
   if(typeof d.darkMode==='boolean') darkMode=d.darkMode;
   if(darkMode) document.body.classList.add('dark-mode');
@@ -3388,6 +3424,25 @@ function adminRequests(){
                 <div style="font-size:14px;font-weight:700;color:#00796b">₹${r.travelAmt.toLocaleString('en-IN')}${r.travelMode?' • '+r.travelMode:''}</div>
               </div>
             </div>`:''}
+            ${(()=>{
+              if(r.type!=='out'||!w) return '';
+              const existingRec=attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===r.date);
+              if(!existingRec||!existingRec.punchIn) return '';
+              const hrs=_hoursBetween(existingRec.punchIn, r.time);
+              if(hrs===null) return '';
+              const weight=Math.max(0,Math.min(1,hrs/8));
+              const excessHrs=Math.max(0,hrs-8);
+              let hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+              const otAmt=Math.round(excessHrs*hourlyRate);
+              const basicAmt=Math.round((w.salaryType==='daily'?(w.basicSalary||0):hourlyRate*8)*weight);
+              return `<div style="background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:10px;padding:10px;margin-bottom:10px">
+                <div style="font-size:10px;color:var(--rb);font-weight:700;text-transform:uppercase;margin-bottom:6px">⏱ ${existingRec.punchIn} → ${r.time} = ${hrs.toFixed(2)}h worked</div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px">
+                  <span>Basic: <strong style="color:var(--ok)">₹${basicAmt.toLocaleString('en-IN')}</strong> (${weight>=1?'full day':Math.round(weight*100)+'%'})</span>
+                  ${excessHrs>0?`<span>Auto OT: <strong style="color:#a05a00">${excessHrs}h = ₹${otAmt.toLocaleString('en-IN')}</strong></span>`:''}
+                </div>
+              </div>`;
+            })()}
             <div style="display:flex;gap:8px;margin-bottom:8px">
               <button onclick="approvePunchReq(${r.id})" style="flex:1;padding:9px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--ok),#009624);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;gap:5px">
                 <span class="mi" style="font-size:15px">check_circle</span>Approve
@@ -4114,6 +4169,7 @@ async function deleteBill(billId){
   if(!(await customConfirm(`⚠️ Bill "${billId}" delete?\n\nThis cannot be undone!`)))return;
   const idx=bills.findIndex(x=>x.id===billId);
   if(idx>-1)bills.splice(idx,1);
+  _markDeleted('bills', billId);
   saveToStorage();
   showToast(`✓ Bill "${billId}" deleted successfully`,'success');
   // Refresh site detail if open
@@ -4954,6 +5010,7 @@ async function deleteSite(sid){
   if(!(await customConfirm(`⚠️ "${s.name}" site delete?\n\nSite se linked bills ka siteId hata diya jayega.`)))return;
   const idx=sites.findIndex(x=>x.id===sid);
   if(idx>-1)sites.splice(idx,1);
+  _markDeleted('sites', sid);
   // Remove siteId from linked bills
   bills.forEach(b=>{if(b.siteId===sid)b.siteId=null;});
   saveToStorage();
@@ -5404,7 +5461,7 @@ function workerSalaryView(){
       </div>
       ${myOTPending.length?`
       <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:12px;padding:12px;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:700;color:#a05a00;margin-bottom:8px;text-transform:uppercase">⏳ Pending OT — ₹${myOTPending.reduce((s,o)=>s+(o.hours*w.otRate),0).toLocaleString('en-IN')}</div>
+        <div style="font-size:11px;font-weight:700;color:#a05a00;margin-bottom:8px;text-transform:uppercase">⏳ Pending OT — ₹${myOTPending.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*w.otRate),0).toLocaleString('en-IN')}</div>
         ${myOTPending.map(o=>`
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,193,7,.3)">
           <div>
@@ -5413,7 +5470,7 @@ function workerSalaryView(){
           </div>
           <div style="text-align:right">
             <div style="font-weight:700;color:#a05a00">${o.hours}h</div>
-            <div style="font-size:13px;font-weight:700;color:var(--rb)">₹${(o.hours*w.otRate).toLocaleString('en-IN')}</div>
+            <div style="font-size:13px;font-weight:700;color:var(--rb)">₹${(typeof o.amount==='number'?o.amount:o.hours*w.otRate).toLocaleString('en-IN')}</div>
           </div>
         </div>`).join('')}
       </div>`:`<div class="card card-sm" style="text-align:center;color:var(--g400);padding:20px"><span class="mi" style="font-size:32px;color:var(--g200);display:block;margin-bottom:6px">schedule</span>No pending OT</div>`}
@@ -5428,7 +5485,7 @@ function workerSalaryView(){
         </div>
         <div style="text-align:right">
           <div style="font-weight:700;color:#a05a00">${o.hours}h</div>
-          <div style="font-size:13px;font-weight:700;color:var(--ok)">₹${(o.hours*w.otRate).toLocaleString('en-IN')} ✓</div>
+          <div style="font-size:13px;font-weight:700;color:var(--ok)">₹${(typeof o.amount==='number'?o.amount:o.hours*w.otRate).toLocaleString('en-IN')} ✓</div>
         </div>
       </div>`).join('')}`:''}
 <div style="font-weight:700;font-size:14px;color:var(--rb);margin-top:16px;margin-bottom:10px;display:flex;align-items:center;gap:6px">
@@ -5673,7 +5730,7 @@ function calcNetSalary(w){
   const perDay=w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/totalDaysThisMonth);
   const earnedBasic=Math.round(w.salaryType==='daily'?(w.basicSalary||0)*liveDays:(perDay*liveDays));
   const myOT=(otLogs||[]).filter(o=>o.workerId===w.id&&!o.paid);
-  const otAmt=myOT.reduce((s,o)=>s+(o.hours*w.otRate),0);
+  const otAmt=myOT.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*w.otRate),0);
   const myRecs=(attendanceRecords||[]).filter(r=>r.workerId===w.id);
   const foodAmt=myRecs.reduce((s,r)=>s+((r.foodAmt&&!r.foodPaid)?r.foodAmt:0),0);
   const travelAmt=myRecs.reduce((s,r)=>s+((r.travelAmt&&!r.travelPaid)?r.travelAmt:0),0);
@@ -5822,7 +5879,7 @@ function _calcPeriodSalary(w, start, end){
     basic = Math.round(sum);
   }
   const otRecs = (otLogs||[]).filter(o=>o.workerId===w.id&&(o.date||'')>=start&&(o.date||'')<=end);
-  const otAmt = otRecs.reduce((s,o)=>s+(o.hours*(w.otRate||0)),0);
+  const otAmt = otRecs.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*(w.otRate||0)),0);
   const otHours = otRecs.reduce((s,o)=>s+o.hours,0);
   const foodAmt = recs.reduce((s,r)=>s+(r.foodAmt||0),0);
   const travelAmt = recs.reduce((s,r)=>s+(r.travelAmt||0),0);
@@ -5988,7 +6045,7 @@ function adminSalary(){
           ${myOTLogs.map(o=>`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#fff8e1;border-radius:8px;margin-bottom:4px;font-size:12px">
             <span style="color:var(--g600)">${o.date} — ${o.reason.split('/')[0]}</span>
-            <span style="font-weight:700;color:#a05a00">${o.hours}h = ₹${(o.hours*w.otRate).toLocaleString('en-IN')}</span>
+            <span style="font-weight:700;color:#a05a00">${o.hours}h = ₹${(typeof o.amount==='number'?o.amount:o.hours*w.otRate).toLocaleString('en-IN')}</span>
           </div>`).join('')}
         </div>`:''}
         <button onclick="openPaySalary(${w.id})" style="width:100%;margin-top:12px;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#1a7a3e,#2eb85c);color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;gap:6px">
@@ -6022,7 +6079,7 @@ function adminSalary(){
             <td style="font-size:13px;color:var(--g600)">${o.date}</td>
             <td><span style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:#a05a00">${o.hours}h</span></td>
             <td style="font-size:13px">₹${w.otRate}/hr</td>
-            <td style="font-weight:700;color:var(--ok)">₹${(o.hours*w.otRate).toLocaleString('en-IN')}</td>
+            <td style="font-weight:700;color:var(--ok)">₹${(typeof o.amount==='number'?o.amount:o.hours*w.otRate).toLocaleString('en-IN')}</td>
             <td style="font-size:12px;color:var(--g600);max-width:150px">${o.reason}</td>
             <td><span class="tag ${o.paid?'tg':'ty'}">${o.paid?'✓ Paid':'⏳ Pending'}</span></td>
             <td><button onclick="openEditOT(${o.id})" style="padding:5px 10px;border:2px solid var(--bl);border-radius:8px;background:#fff;color:var(--bl);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:3px;white-space:nowrap"><span class="mi" style="font-size:13px">edit</span>Edit</button></td>
@@ -6102,6 +6159,7 @@ async function deleteSalaryHistory(histId){
   const idx=salaryHistory.findIndex(x=>x.id===histId);
   if(idx<0)return;
   salaryHistory.splice(idx,1);
+  _markDeleted('salaryHistory', histId);
   saveToStorage();
   showToast('🗑 Payment record deleted','success');
   adminTab('salary');
@@ -6253,6 +6311,7 @@ function deleteOTLog(){
   const id=+document.getElementById('eot_id').value;
   const idx=otLogs.findIndex(x=>x.id===id);
   if(idx>-1)otLogs.splice(idx,1);
+  _markDeleted('otLogs', id);
   closeModal('editOTModal');
   saveToStorage();
   showToast('OT Log deleted','success');
@@ -8103,6 +8162,42 @@ function rejectPunchReq(rid){
   adminTab('requests');
 }
 
+// Automatically syncs an OT log entry for hours worked beyond the standard 8-hour day,
+// valued at the same per-hour rate as basic pay. Tagged with autoFromPunch so it can be
+// found and updated (not duplicated) whenever a punch is re-approved/edited, while any
+// OT an admin logged manually for other reasons is never touched by this.
+function _syncAutoOTFromPunch(w, rec, hoursWorked){
+  if(hoursWorked===null || hoursWorked===undefined) return;
+  const STANDARD_WORKDAY_HOURS = 8;
+  const excessHours = Math.round(Math.max(0, hoursWorked - STANDARD_WORKDAY_HOURS)*100)/100;
+  const existingIdx = otLogs.findIndex(o=>o.workerId===w.id && o.date===rec.date && o.autoFromPunch);
+  if(excessHours<=0){
+    if(existingIdx>=0){ _markDeleted('otLogs', otLogs[existingIdx].id); otLogs.splice(existingIdx,1); }
+    return;
+  }
+  // Same per-hour rate as basic pay: dailyRate/8 for Daily type; for Fixed/Monthly,
+  // this specific day's equivalent daily rate (monthly ÷ actual days in that month) ÷ 8.
+  let hourlyRate;
+  if(w.salaryType==='daily'){
+    hourlyRate = (w.basicSalary||0)/STANDARD_WORKDAY_HOURS;
+  } else {
+    const [yy,mm] = rec.date.split('-').map(Number);
+    hourlyRate = (w.basicSalary||0)/getDaysInMonth(yy,mm)/STANDARD_WORKDAY_HOURS;
+  }
+  const amount = Math.round(excessHours*hourlyRate);
+  if(existingIdx>=0){
+    otLogs[existingIdx].hours = excessHours;
+    otLogs[existingIdx].amount = amount;
+    otLogs[existingIdx].reason = 'Auto — '+hoursWorked.toFixed(2)+'h worked (8h standard + '+excessHours+'h extra)';
+  } else {
+    otLogs.push({
+      id: Date.now()+Math.floor(Math.random()*1000),
+      workerId: w.id, date: rec.date, hours: excessHours, amount, paid: false,
+      reason: 'Auto — '+hoursWorked.toFixed(2)+'h worked (8h standard + '+excessHours+'h extra)',
+      autoFromPunch: true
+    });
+  }
+}
 function _applyPunchToAttendance(r){
   const w=workers.find(x=>x.id===r.workerId);if(!w)return;
   const dateStr=r.date;
@@ -8139,6 +8234,10 @@ function _applyPunchToAttendance(r){
         rec.hoursWeight = weight;
         rec.status = weight<=0 ? 'absent' : (weight>=1 ? 'present' : 'halfday');
       }
+      // Any hours worked BEYOND the standard 8-hour day are automatically logged as
+      // OT, paid at the same per-hour rate as basic pay (daily-equivalent-rate ÷ 8) —
+      // so working 1 extra hour on a ₹500/day (₹62.5/hr) job adds ₹62.5, not nothing.
+      _syncAutoOTFromPunch(w, rec, hoursWorked);
     }
   }
 }
@@ -8176,6 +8275,37 @@ function openEditPunchReq(rid){
   document.getElementById('eprStatus').className='tag '+(r.status==='approved'?'tg':r.status==='rejected'?'tr':'ty');
   document.getElementById('eprStatus').textContent=r.status==='approved'?'✓ Approved':r.status==='rejected'?'✗ Rejected':'⏳ Pending';
   openModal('editPunchReqModal');
+  setTimeout(()=>_eprRecalcAndShowPreview(true), 50);
+}
+
+// Recalculates the hours-worked/basic/OT preview inside the Edit Punch Request modal.
+// resetOT=true (on type/date/time change) refreshes the OT hours field to the freshly
+// auto-calculated value; resetOT=false (typing in the OT field itself) just re-renders
+// the preview using whatever the admin has currently typed, without overwriting it.
+function _eprRecalcAndShowPreview(resetOT){
+  const rid = +document.getElementById('epr_id').value;
+  const r = punchRequests.find(x=>x.id===rid);
+  const preview = document.getElementById('eprHoursPreview');
+  if(!r || !preview) return;
+  const type = document.getElementById('epr_type').value;
+  const date = document.getElementById('epr_date').value;
+  const time = document.getElementById('epr_time').value;
+  const w = workers.find(x=>x.id===r.workerId);
+  if(type!=='out' || !w){ preview.style.display='none'; return; }
+  const existingRec = attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===date);
+  if(!existingRec || !existingRec.punchIn){ preview.style.display='none'; return; }
+  const hrs = _hoursBetween(existingRec.punchIn, time);
+  if(hrs===null){ preview.style.display='none'; return; }
+  preview.style.display='block';
+  const weight = Math.max(0, Math.min(1, hrs/8));
+  const autoExcessHrs = Math.round(Math.max(0, hrs-8)*100)/100;
+  const otInput = document.getElementById('epr_ot_hours');
+  if(resetOT) otInput.value = autoExcessHrs;
+  const otHrsUsed = +otInput.value || 0;
+  const hourlyRate = w.salaryType==='daily' ? (w.basicSalary||0)/8 : (()=>{const [yy,mm]=date.split('-').map(Number); return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+  const basicAmt = Math.round((w.salaryType==='daily'?(w.basicSalary||0):hourlyRate*8)*weight);
+  const otAmt = Math.round(otHrsUsed*hourlyRate);
+  document.getElementById('eprHoursText').innerHTML = existingRec.punchIn+' → '+time+' = <strong>'+hrs.toFixed(2)+'h</strong> worked<br>Basic: <strong style="color:var(--ok)">₹'+basicAmt.toLocaleString('en-IN')+'</strong> ('+(weight>=1?'full day':Math.round(weight*100)+'%')+')'+(otHrsUsed>0?' • OT: <strong style="color:#a05a00">₹'+otAmt.toLocaleString('en-IN')+'</strong>':'');
 }
 
 function saveEditPunchReq(){
@@ -8191,6 +8321,31 @@ function saveEditPunchReq(){
   r.status='approved';
   r.approvedAt=new Date().toISOString();
   _applyPunchToAttendance(r);
+  // If admin adjusted the OT Hours field in this modal, that manual value takes
+  // precedence over whatever was auto-calculated.
+  if(r.type==='out'){
+    const otInput=document.getElementById('epr_ot_hours');
+    if(otInput && otInput.parentElement.parentElement.style.display!=='none'){
+      const manualOT=+otInput.value||0;
+      const existingIdx=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
+      if(manualOT<=0){
+        if(existingIdx>=0){ _markDeleted('otLogs', otLogs[existingIdx].id); otLogs.splice(existingIdx,1); }
+      } else {
+        const w=workers.find(x=>x.id===r.workerId);
+        if(w){
+          const hourlyRate=w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+          const amount=Math.round(manualOT*hourlyRate);
+          if(existingIdx>=0){
+            otLogs[existingIdx].hours=manualOT;
+            otLogs[existingIdx].amount=amount;
+            otLogs[existingIdx].reason='Admin adjusted OT hours during approval';
+          } else {
+            otLogs.push({id:Date.now()+Math.floor(Math.random()*1000),workerId:r.workerId,date:r.date,hours:manualOT,amount,paid:false,reason:'Admin adjusted OT hours during approval',autoFromPunch:true});
+          }
+        }
+      }
+    }
+  }
   // Save travelling expense to attendance record (same as direct Approve flow)
   if((r.travelAmt||0)>0){
     const attRec=attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===r.date);
@@ -8208,6 +8363,7 @@ function saveEditPunchReq(){
 function deletePunchReq(rid){
   const idx=punchRequests.findIndex(x=>x.id===rid);
   if(idx>-1)punchRequests.splice(idx,1);
+  _markDeleted('punchRequests', rid);
   saveToStorage();
   closeModal('editPunchReqModal');
   showToast('Punch request deleted','');
@@ -8238,18 +8394,19 @@ async function deleteWorker(wid){
   if(!(await customConfirm('Delete "'+w.name+'"?\n\nThis action cannot be undone!'))){return;}
   const idx=workers.findIndex(x=>x.id===numWid);
   if(idx>-1)workers.splice(idx,1);
+  _markDeleted('workers', numWid);
   // Remove related data - use both number and string comparison for safety
   for(let i=advanceRequests.length-1;i>=0;i--){
-    if(advanceRequests[i].workerId==numWid)advanceRequests.splice(i,1);
+    if(advanceRequests[i].workerId==numWid){ _markDeleted('advanceRequests', advanceRequests[i].id); advanceRequests.splice(i,1); }
   }
   for(let i=(otLogs||[]).length-1;i>=0;i--){
-    if(otLogs[i].workerId==numWid)otLogs.splice(i,1);
+    if(otLogs[i].workerId==numWid){ _markDeleted('otLogs', otLogs[i].id); otLogs.splice(i,1); }
   }
   for(let i=attendanceRecords.length-1;i>=0;i--){
-    if(attendanceRecords[i].workerId==numWid)attendanceRecords.splice(i,1);
+    if(attendanceRecords[i].workerId==numWid){ _markDeleted('attendanceRecords', attendanceRecords[i].workerId+'_'+attendanceRecords[i].date); attendanceRecords.splice(i,1); }
   }
   for(let i=punchRequests.length-1;i>=0;i--){
-    if(punchRequests[i].workerId==numWid)punchRequests.splice(i,1);
+    if(punchRequests[i].workerId==numWid){ _markDeleted('punchRequests', punchRequests[i].id); punchRequests.splice(i,1); }
   }
   saveToStorage();
   showToast(w.name+' deleted successfully','success');
@@ -8780,7 +8937,7 @@ function _calcMonthSalary(w, monthVal){
   const paidLeaveDays = recs.filter(r=>r.status==='paid_leave').length;
   const days = presentDays;
   const myOT = (otLogs||[]).filter(o=>o.workerId===w.id&&!o.paid&&(o.date||'').startsWith(monthVal));
-  const otAmt = myOT.reduce((s,o)=>s+(o.hours*(w.otRate||0)),0);
+  const otAmt = myOT.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*(w.otRate||0)),0);
   const otHours = myOT.reduce((s,o)=>s+o.hours,0);
   const foodAmt = recs.reduce((s,r)=>s+((r.foodAmt&&!r.foodPaid)?r.foodAmt:0),0);
   const travelAmt = recs.reduce((s,r)=>s+((r.travelAmt&&!r.travelPaid)?r.travelAmt:0),0);
@@ -9257,7 +9414,8 @@ async function openAddClient(){
 async function deleteClient(cid){
   if(!(await customConfirm('Delete client? Unke saare bills is se link nahi hatenge, sirf client record delete hoga.')))return;
   const i=clients.findIndex(c=>String(c.id)===String(cid));
-  if(i>=0)clients.splice(i,1);saveToStorage();adminTab('clients');
+  if(i>=0){ _markDeleted('clients', clients[i].id); clients.splice(i,1); }
+  saveToStorage();adminTab('clients');
 }
 async function editClient(cid){
   const c=clients.find(x=>String(x.id)===String(cid));if(!c)return;
@@ -9599,6 +9757,7 @@ async function deleteWorkLog(logId){
   const i=workLogs.findIndex(l=>l.id===logId);
   if(i<0)return;
   workLogs.splice(i,1);
+  _markDeleted('workLogs', logId);
   saveToStorage();
   workerTab('worklog');
   showToast('✓ Work log deleted','success');
@@ -9631,7 +9790,7 @@ function adminMaterialReq(){
 }
 function approveMatReq(id){const r=materialReqs.find(x=>x.id===id);if(!r)return;r.status='approved';saveToStorage();adminTab('matreq');showToast('Approved','success');}
 function rejectMatReq(id){const r=materialReqs.find(x=>x.id===id);if(!r)return;r.status='rejected';saveToStorage();adminTab('matreq');showToast('Rejected','');}
-async function deleteMatReq(id){if(!(await customConfirm('Delete?')))return;const i=materialReqs.findIndex(x=>x.id===id);if(i>=0)materialReqs.splice(i,1);saveToStorage();adminTab('matreq');}
+async function deleteMatReq(id){if(!(await customConfirm('Delete?')))return;const i=materialReqs.findIndex(x=>x.id===id);if(i>=0){_markDeleted('materialReqs',id);materialReqs.splice(i,1);}saveToStorage();adminTab('matreq');}
 
 // ════ 6. MATERIAL REQ — Worker ════
 function workerMatReq(){
@@ -10501,7 +10660,7 @@ function _renderWorkerSalaryDetail(){
   function dayFigures(d){
     const rec = (attendanceRecords||[]).find(r=>r.workerId===w.id&&r.date===d);
     const status = rec?rec.status:null;
-    const otForDay = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date===d).reduce((s,o)=>s+o.hours*(w.otRate||0),0);
+    const otForDay = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date===d).reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*(w.otRate||0)),0);
     const otHrsDay = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date===d).reduce((s,o)=>s+o.hours,0);
     let dayBasic=0;
     const weight = _recDayWeight(rec);
@@ -10626,7 +10785,7 @@ function _showThisMonthPayable(){
 function _showOTDetail(){
   const byWorker=workers.map(w=>{
     const myOT=(otLogs||[]).filter(o=>o.workerId===w.id);
-    const unpaidAmt=myOT.filter(o=>!o.paid).reduce((s,o)=>s+(o.hours*(w.otRate||0)),0);
+    const unpaidAmt=myOT.filter(o=>!o.paid).reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*(w.otRate||0)),0);
     const totalHrs=myOT.reduce((s,o)=>s+o.hours,0);
     return {w,myOT,unpaidAmt,totalHrs};
   }).filter(r=>r.totalHrs>0).sort((a,b)=>b.unpaidAmt-a.unpaidAmt);
@@ -10768,6 +10927,7 @@ async function deleteApprovedAdvance(advId){
   const w=workers.find(x=>x.id===r.workerId);
   if(w&&r.status==='approved') w.advance=Math.max(0,(w.advance||0)-r.amount);
   advanceRequests.splice(idx,1);
+  _markDeleted('advanceRequests', advId);
   saveToStorage();
   if(w) _refreshWorkerViews(w,'advance');
   showToast('Advance deleted','success');
@@ -10822,7 +10982,7 @@ function _calcSalaryForMonth(w, monthVal){
   const perDay = w.salaryType==='daily'?(w.basicSalary||0):((w.basicSalary||0)/getDaysInMonth(csfmYr,csfmMo));
   const earnedBasic = Math.round(w.salaryType==='daily'?(w.basicSalary||0)*presentDays:(perDay*presentDays));
   const myOT = (otLogs||[]).filter(o=>o.workerId===w.id&&o.date&&o.date.startsWith(monthVal));
-  const otAmt = myOT.reduce((s,o)=>s+(o.hours*(w.otRate||0)),0);
+  const otAmt = myOT.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*(w.otRate||0)),0);
   const otHours = myOT.reduce((s,o)=>s+o.hours,0);
   const foodAmt = recs.reduce((s,r)=>s+(r.foodAmt||0),0);
   const travelAmt = recs.reduce((s,r)=>s+(r.travelAmt||0),0);
