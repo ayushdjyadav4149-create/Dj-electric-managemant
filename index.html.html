@@ -1051,6 +1051,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
     </div>
     <div class="fg"><label class="lbl">Location / Address</label>
       <input type="text" class="inp" id="epr_address" placeholder="Location...">
+      <a id="epr_map_link" href="#" target="_blank" rel="noopener" style="display:none;margin-top:6px;font-size:12px;color:var(--bl);text-decoration:underline;align-items:center;gap:4px"><span class="mi" style="font-size:14px">map</span>View on Google Maps<span class="mi" style="font-size:12px">open_in_new</span></a>
     </div>
     <div class="fg"><label class="lbl">Admin Note</label>
       <input type="text" class="inp" id="epr_note" placeholder="Optional note...">
@@ -3415,7 +3416,7 @@ function adminRequests(){
             </div>
             <div style="font-size:12px;color:var(--g600);margin-bottom:10px;display:flex;align-items:flex-start;gap:5px">
               <span class="mi" style="font-size:14px;color:var(--bl);flex-shrink:0">place</span>
-              <span>${r.address||'Location not available'}</span>
+              ${r.address?`<a href="${r.lat&&r.lng?('https://www.google.com/maps?q='+r.lat+','+r.lng):('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(r.address))}" target="_blank" rel="noopener" style="color:var(--bl);text-decoration:underline;display:inline-flex;align-items:center;gap:3px">${r.address}<span class="mi" style="font-size:12px">open_in_new</span></a>`:'<span>Location not available</span>'}
             </div>
             ${(r.travelAmt||0)>0?`<div style="background:rgba(0,150,136,.08);border:1.5px solid rgba(0,150,136,.3);border-radius:10px;padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
               <span class="mi" style="font-size:16px;color:#00796b">directions_bus</span>
@@ -5253,7 +5254,7 @@ function workerHome(){
     <div>
       <div class="dash-grid" style="grid-template-columns:1fr 1fr">
         <div class="stat-card ${balanceNeg?'sc-red':'sc-blue'}" style="cursor:pointer" onclick="_showWorkerSalaryDetail(${w.id})"><div class="stat-num">${balanceNeg?'-':''}₹${_kFmt(Math.abs(balance))}</div><div class="stat-label">${balanceNeg?'Advance Balance':'Balance'} ↗</div><span class="stat-icon mi">account_balance</span></div>
-        <div class="stat-card sc-yellow"><div class="stat-num">${s.days}</div><div class="stat-label">Days Worked</div><span class="stat-icon mi">calendar_today</span></div>
+        <div class="stat-card sc-yellow" style="cursor:pointer" onclick="_showWorkerAttendanceHistory(${w.id})"><div class="stat-num">${s.days}</div><div class="stat-label">Days Worked ↗</div><span class="stat-icon mi">calendar_today</span></div>
         <div class="stat-card sc-green" style="cursor:pointer" onclick="_showWorkerEarnedHistory(${w.id})"><div class="stat-num">₹${_kFmt(_totalPaidSalary(w))}</div><div class="stat-label">Earned ↗</div><span class="stat-icon mi">trending_up</span></div>
         <div class="stat-card sc-red" style="cursor:pointer" onclick="_showWorkerAdvanceHistory(${w.id})"><div class="stat-num">₹${_kFmt(_trueOutstandingAdvance(w))}</div><div class="stat-label">Advance ↗</div><span class="stat-icon mi">payments</span></div>
       </div>
@@ -5610,7 +5611,8 @@ function openPunchModal(){
   const _lw=loggedInWorker||workers[0];
   document.getElementById('punchTitle').textContent=punchedIn?'Punch Out — '+_lw.name:'Punch In — '+_lw.name;
   document.getElementById('confirmPunchText').textContent=punchedIn?'Confirm Punch Out':'Confirm Punch In';
-  document.getElementById('confirmPunchBtn').style.background=punchedIn?'linear-gradient(135deg,#f44336,#c62828)':'linear-gradient(135deg,var(--rb),var(--bm))';
+  const punchBtn=document.getElementById('confirmPunchBtn');
+  punchBtn.style.background=punchedIn?'linear-gradient(135deg,#f44336,#c62828)':'linear-gradient(135deg,var(--rb),var(--bm))';
 
   // Live clock
   const clockEl=document.getElementById('punchClock');
@@ -5625,11 +5627,30 @@ function openPunchModal(){
     },1000);
   }
 
-  // GPS fetch
+  // GPS fetch — the Confirm button stays disabled until location resolves (success or
+  // denied) so a worker can't accidentally submit before GPS has a chance to work,
+  // which was silently causing "Location not available" to get captured even when
+  // GPS would have succeeded a moment later.
   const addrEl=document.getElementById('punchGpsAddr');
   const coordEl=document.getElementById('punchGpsCoords');
   window._punchLocation={lat:'',lng:'',address:'Location not available'};
   if(addrEl) addrEl.textContent='📍 GPS location fetch ho raha hai...';
+  punchBtn.disabled=true;
+  punchBtn.style.opacity='0.55';
+  punchBtn.style.cursor='not-allowed';
+  document.getElementById('confirmPunchText').textContent='📍 Location capture ho raha hai...';
+  clearTimeout(window._punchGpsSafetyTimer);
+  const _unlockPunchBtn=()=>{
+    if(!punchBtn.disabled) return; // already unlocked
+    punchBtn.disabled=false;
+    punchBtn.style.opacity='1';
+    punchBtn.style.cursor='pointer';
+    document.getElementById('confirmPunchText').textContent=punchedIn?'Confirm Punch Out':'Confirm Punch In';
+    clearTimeout(window._punchGpsSafetyTimer);
+  };
+  // Safety net: never leave the button stuck disabled, even if something unexpected
+  // happens with the geolocation callbacks.
+  window._punchGpsSafetyTimer=setTimeout(_unlockPunchBtn, 6000);
 
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(function(pos){
@@ -5638,19 +5659,25 @@ function openPunchModal(){
       if(coordEl) coordEl.textContent='📌 '+lat+'° N, '+lng+'° E';
       window._punchLocation={lat,lng,address:'Lat: '+lat+', Lng: '+lng};
       if(addrEl) addrEl.textContent='📍 Location found — loading address...';
+      _unlockPunchBtn();
       fetch('https://nominatim.openstreetmap.org/reverse?lat='+lat+'&lon='+lng+'&format=json')
         .then(r=>r.json()).then(d=>{
           const addr=d.display_name||'Location detected';
           const short=addr.split(',').slice(0,4).join(', ');
           if(addrEl) addrEl.textContent='📍 '+short;
           window._punchLocation={lat,lng,address:short};
-        }).catch(()=>{});
+        }).catch(()=>{
+          // Reverse-geocoding failed (network/rate-limit) — keep the coordinate-based
+          // address already set above rather than losing the location entirely.
+        });
     },function(){
       if(addrEl) addrEl.textContent='⚠️ GPS access denied — manual record hoga';
       if(coordEl) coordEl.textContent='Browser settings to allow location';
+      _unlockPunchBtn();
     },{enableHighAccuracy:true,timeout:10000});
   } else {
     if(addrEl) addrEl.textContent='⚠️ GPS not supported on this device';
+    _unlockPunchBtn();
   }
   // Reset travel fields on each punch open
   const _ta=document.getElementById('punch_travel_amt');
@@ -7268,6 +7295,7 @@ function closeModal(id){
   const el=document.getElementById(id);
   if(el) el.classList.remove('open');
   if(id==='punchModal'&&window._clockInterval){clearInterval(window._clockInterval);window._clockInterval=null;}
+  if(id==='punchModal'&&window._punchGpsSafetyTimer){clearTimeout(window._punchGpsSafetyTimer);window._punchGpsSafetyTimer=null;}
 }
 let _tt;
 function _kFmt(n){
@@ -8269,6 +8297,15 @@ function openEditPunchReq(rid){
   document.getElementById('epr_date').value=r.date;
   document.getElementById('epr_time').innerHTML=_timeSelectHTML(r.time);
   document.getElementById('epr_address').value=r.address||'';
+  const mapLink=document.getElementById('epr_map_link');
+  if(mapLink){
+    if(r.address){
+      mapLink.href = r.lat&&r.lng ? ('https://www.google.com/maps?q='+r.lat+','+r.lng) : ('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(r.address));
+      mapLink.style.display='inline-flex';
+    } else {
+      mapLink.style.display='none';
+    }
+  }
   document.getElementById('epr_note').value=r.note||'';
   document.getElementById('epr_travel_amt').value=r.travelAmt||0;
   document.getElementById('epr_travel_mode').value=r.travelMode||'';
@@ -10546,6 +10583,60 @@ function _showWorkerDueBreakdown(wid){
     </div>
   `;
   _showDetailModal('💰 '+w.name+' — Due Balance Breakdown',body);
+}
+
+// Worker's own Attendance breakdown — shown when clicking "Days Worked" on their
+// home dashboard. Defaults to the current month, with a month selector so they can
+// check any past month's attendance too.
+function _showWorkerAttendanceHistory(wid, monthVal){
+  const w = workers.find(x=>x.id===+wid);
+  if(!w) return;
+  monthVal = monthVal || _currentMonthVal();
+  const [yy,mm] = monthVal.split('-').map(Number);
+  const monthLabel = new Date(yy,mm-1,1).toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const recs = (attendanceRecords||[]).filter(r=>r.workerId===w.id&&r.date.startsWith(monthVal)).sort((a,b)=>b.date.localeCompare(a.date));
+  const presentCount = recs.filter(r=>r.status==='present').length;
+  const halfCount = recs.filter(r=>r.status==='halfday').length;
+  const absentCount = recs.filter(r=>r.status==='absent').length;
+  const totalWeight = _sumDayWeights(recs);
+
+  const statusMeta = {
+    present: ['✓ Present','var(--ok)','rgba(0,200,83,.12)'],
+    halfday: ['◐ Half Day','var(--warn)','rgba(255,152,0,.12)'],
+    absent: ['✗ Absent','var(--err)','rgba(244,67,54,.1)'],
+    paid_leave: ['🏖 Paid Leave','var(--bl)','rgba(0,102,204,.1)'],
+    holiday: ['🎉 Holiday','#7b1fa2','rgba(123,31,162,.1)']
+  };
+
+  const body = `
+    <div style="margin-bottom:14px">
+      <select onchange="_showWorkerAttendanceHistory(${w.id}, this.value)" style="border:2px solid var(--rb);border-radius:10px;padding:8px 12px;font-weight:700;color:var(--rb);background:#fff;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;cursor:pointer;width:100%">
+        ${_getMonthOptions().map(m=>`<option value="${m.val}" ${m.val===monthVal?'selected':''}>${m.label}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div style="background:rgba(0,200,83,.1);border-radius:10px;padding:10px;text-align:center"><div style="font-size:18px;font-weight:800;color:var(--ok);font-family:'Rajdhani',sans-serif">${presentCount}</div><div style="font-size:10px;color:var(--g600)">Present</div></div>
+      <div style="background:rgba(255,152,0,.1);border-radius:10px;padding:10px;text-align:center"><div style="font-size:18px;font-weight:800;color:var(--warn);font-family:'Rajdhani',sans-serif">${halfCount}</div><div style="font-size:10px;color:var(--g600)">Half Day</div></div>
+      <div style="background:rgba(244,67,54,.1);border-radius:10px;padding:10px;text-align:center"><div style="font-size:18px;font-weight:800;color:var(--err);font-family:'Rajdhani',sans-serif">${absentCount}</div><div style="font-size:10px;color:var(--g600)">Absent</div></div>
+      <div style="background:var(--rb);border-radius:10px;padding:10px;text-align:center"><div style="font-size:18px;font-weight:800;color:var(--yellow);font-family:'Rajdhani',sans-serif">${totalWeight}</div><div style="font-size:10px;color:rgba(255,255,255,.7)">Total Days</div></div>
+    </div>
+    <div style="font-weight:700;font-size:12px;color:var(--rb);margin-bottom:8px">${monthLabel} — Day-by-Day</div>
+    <div style="display:grid;gap:6px;max-height:340px;overflow-y:auto">
+    ${recs.length===0?'<div class="empty" style="padding:16px"><span class="mi">event_busy</span><p>Is mahine ki koi attendance record nahi hai</p></div>':
+    recs.map(r=>{
+      const meta = statusMeta[r.status]||['—','var(--g400)','var(--g100)'];
+      const dLabel = new Date(r.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'});
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:#fff;border:1px solid var(--g100);border-radius:8px">
+        <div style="font-weight:700;font-size:12px">${dLabel}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${(r.punchIn||r.punchOut)?`<span style="font-size:10px;color:var(--g400)">${r.punchIn||'—'} → ${r.punchOut||'—'}</span>`:''}
+          <span style="padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;background:${meta[2]};color:${meta[1]}">${meta[0]}</span>
+        </div>
+      </div>`;
+    }).join('')}
+    </div>
+  `;
+  _showDetailModal('📅 My Attendance — '+w.name, body);
 }
 
 // Worker's own "Earned" breakdown — every month that's actually been paid to them,
