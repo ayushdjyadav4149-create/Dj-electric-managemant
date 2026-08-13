@@ -319,7 +319,7 @@ html,body{height:100%;font-family:'Roboto',sans-serif;background:var(--off);colo
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:16px;}
 .modal-overlay.open{display:flex;}
-.modal-box{background:#fff;width:100%;max-width:520px;border-radius:20px;padding:28px;animation:mIn .3s ease;position:relative;max-height:90vh;overflow-y:auto;}
+.modal-box{background:#fff;width:100%;max-width:520px;border-radius:20px;padding:28px;animation:mIn .3s ease;position:relative;max-height:90vh;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;}
 @keyframes mIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
 .modal-title{font-size:18px;font-weight:700;color:var(--rb);margin-bottom:20px;font-family:'Rajdhani',sans-serif;}
 .modal-close{position:absolute;top:14px;right:16px;background:none;border:none;font-size:24px;color:var(--g400);cursor:pointer;}
@@ -1444,7 +1444,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
 
 <!-- Attendance Edit Modal -->
 <div class="modal-overlay" id="attEditModal">
-  <div class="modal-box" style="max-width:480px">
+  <div class="modal-box" style="max-width:480px;overflow:hidden;width:100%;box-sizing:border-box">
     <button class="modal-close mi" onclick="closeModal('attEditModal')">close</button>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <div style="width:42px;height:42px;background:linear-gradient(135deg,var(--rb),var(--bm));border-radius:12px;display:flex;align-items:center;justify-content:center">
@@ -1488,7 +1488,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
         </div>
         <div class="fg" style="margin:0">
           <label class="lbl">Punch Out Time</label>
-          <input type="time" class="inp" id="att_punch_out" value="18:00" onchange="calcAutoFood();updateAllowancePreview()">
+          <input type="time" class="inp" id="att_punch_out" value="18:00" onchange="calcAutoFood();updateAllowancePreview();_checkNightOTSuggestion()">
         </div>
       </div>
       <div class="fg" style="margin-top:10px;margin-bottom:0">
@@ -1565,18 +1565,16 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
     </div>
 
     <!-- OT Section -->
+    <div id="att_night_ot_suggestion"></div>
     <div style="background:rgba(255,152,0,.07);border-radius:12px;padding:14px;margin-bottom:16px;border:1.5px solid rgba(255,152,0,.2)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700;color:#a05a00;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px">
-          <span class="mi" style="font-size:16px">more_time</span> Overtime (OT)
         </div>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="att_ot_enable" onchange="toggleAttOT()" style="width:15px;height:15px;accent-color:var(--warn)">
           <span style="font-size:12px;font-weight:700;color:#a05a00">Add OT</span>
         </label>
       </div>
-      <div id="att_ot_fields" style="display:none">
-        <div class="row2">
+      <div id="att_ot_fields" style="display:none;width:100%;box-sizing:border-box">
+        <div class="row2" style="width:100%;box-sizing:border-box">
           <div class="fg" style="margin:0">
             <label class="lbl">OT Hours</label>
             <input type="number" class="inp" id="att_ot_hours" placeholder="e.g. 2" min="0.5" max="12" step="0.5" value="2" oninput="_updateOTPreview(null)">
@@ -4747,6 +4745,32 @@ function calcHours(pIn, pOut){
   }catch(e){return '—';}
 }
 
+function _checkNightOTSuggestion(){
+  const wid = +document.getElementById('att_wid').value;
+  const date = document.getElementById('att_date').value;
+  const w = workers.find(x=>x.id===wid);
+  if(!w||!date) return;
+  const punchOutInput = document.getElementById('att_punch_out').value; // HH:MM 24hr
+  // Convert HH:MM to 12hr for _nightOtSuggestion
+  const [hh,mm] = punchOutInput.split(':').map(Number);
+  if(isNaN(hh)) return;
+  const period = hh >= 12 ? 'pm' : 'am';
+  const h12 = hh > 12 ? hh-12 : (hh===0 ? 12 : hh);
+  const timeStr = h12+':'+(mm<10?'0':'')+mm+' '+period;
+  const nightSug = _nightOtSuggestion(timeStr);
+  const nightSugBox = document.getElementById('att_night_ot_suggestion');
+  const otEnable = document.getElementById('att_ot_enable');
+  const otFields = document.getElementById('att_ot_fields');
+  const existingOT = otLogs.find(o=>o.workerId===wid&&o.date===date);
+  if(nightSugBox && nightSug.hours>0 && !existingOT){
+    const hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm2]=date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm2)/8;})();
+    const nightAmt = Math.round(nightSug.hours*hourlyRate);
+    if(otEnable&&!otEnable.checked){ otEnable.checked=true; if(otFields) otFields.style.display='block'; if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value=nightSug.hours; if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value=Math.round(hourlyRate); if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value='Night OT — '+nightSug.label; _updateOTPreview(w); }
+    nightSugBox.innerHTML=`<div style="background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#7b1fa2">🌙 Night OT — ${nightSug.label}</div><div style="font-size:11px;color:var(--g600);margin-top:3px">${nightSug.hours}h × ₹${Math.round(hourlyRate)}/hr = <strong style="color:#7b1fa2">₹${nightAmt}</strong></div></div>`;
+  } else if(nightSugBox && nightSug.hours===0){
+    nightSugBox.innerHTML='';
+  }
+}
 function openAttEdit(wid, date){
   const w=workers.find(x=>x.id===+wid);
   if(!w) return;
@@ -4798,11 +4822,37 @@ function openAttEdit(wid, date){
   if(otEnable) otEnable.checked = !!existingOT;
   if(otFields) otFields.style.display = existingOT?'block':'none';
   if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = existingOT?existingOT.hours:2;
-  if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = existingOT?existingOT.amount/existingOT.hours:(w.otRate||0);
-  if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = existingOT?existingOT.reason:'';
+  if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = existingOT?Math.round(existingOT.amount/existingOT.hours):(w.otRate||0);
+  const cleanReason = existingOT ? (existingOT.reason||'').replace('Admin adjusted OT hours during approval','OT done') : '';
+  if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = cleanReason;
   if(otExisting) otExisting.innerHTML = existingOT?
     '<span style="color:var(--warn);font-weight:700">⏰ OT record exists: '+existingOT.hours+'hrs = ₹'+(existingOT.amount||0)+(existingOT.paid?' (Paid)':' (Unpaid)')+'</span>':'';
   _updateOTPreview(w);
+
+  // Night OT suggestion — if punch out time is 9 PM or later, auto-suggest
+  // night OT (same logic as punch request card) and pre-tick the checkbox
+  const punchOutVal = rec?.punchOut || w.dutyEnd || '';
+  const nightSug = _nightOtSuggestion(punchOutVal);
+  const nightSugBox = document.getElementById('att_night_ot_suggestion');
+  if(nightSugBox){
+    if(nightSug.hours > 0 && !existingOT){
+      // Pre-tick the OT checkbox and fill night OT values
+      const hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+      const nightAmt = Math.round(nightSug.hours * hourlyRate);
+      if(otEnable){ otEnable.checked = true; }
+      if(otFields){ otFields.style.display = 'block'; }
+      if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = nightSug.hours;
+      if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = Math.round(hourlyRate);
+      if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = 'Night OT — '+nightSug.label;
+      nightSugBox.innerHTML = `<div style="background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:#7b1fa2">🌙 Night OT Auto-Suggestion — ${nightSug.label}</div>
+        <div style="font-size:11px;color:var(--g600);margin-top:3px">${nightSug.hours}h × ₹${Math.round(hourlyRate)}/hr = <strong style="color:#7b1fa2">₹${nightAmt}</strong> — Pre-filled, edit ya uncheck karo agar nahi dena</div>
+      </div>`;
+      _updateOTPreview(w);
+    } else {
+      nightSugBox.innerHTML = '';
+    }
+  }
 
   openModal('attEditModal');
 }
@@ -7056,6 +7106,16 @@ function adminSettings(){
         </div>
       </div>
 <div style="margin-bottom:20px">
+        <div style="font-size:12px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">🔧 Data Repair Tools</div>
+        <div style="display:grid;gap:8px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--g100);border-radius:10px;padding:10px 14px">
+            <div>
+              <div style="font-size:12px;font-weight:700">Repair Missing OT Logs</div>
+              <div style="font-size:11px;color:var(--g400);margin-top:2px">Purane approved punch-outs ke liye jo OT add nahi hua, usse recalculate karo</div>
+            </div>
+            <button onclick="recalcAllAutoOT()" style="padding:7px 14px;border:none;border-radius:8px;background:var(--rb);color:#fff;font-weight:700;font-size:12px;cursor:pointer;white-space:nowrap">Repair OT</button>
+          </div>
+        </div>
         <div style="font-size:12px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">🛡️ Auto-Backup (Safety Net)</div>
         <div style="font-size:12px;color:var(--g600);margin-bottom:10px;line-height:1.5">Ye khud-ba-khud har 30 minute mein banta hai — bina kuch kiye. Agar kabhi data galat lage ya kuch gayab lage, yahan se turant purani achi copy restore kar sakte hain.</div>
         <div style="display:grid;gap:8px">
@@ -8344,6 +8404,29 @@ function rejectPunchReq(rid){
   adminTab('requests');
 }
 
+// Repairs missed auto-OT: re-runs _syncAutoOTFromPunch for all approved punch-OUT
+// requests so any OT that was missed (e.g. because punch IN was missing at approval
+// time) gets properly calculated from the now-correct attendance records.
+function recalcAllAutoOT(){
+  let fixed = 0;
+  (punchRequests||[]).filter(r=>r.status==='approved'&&r.type==='out').forEach(r=>{
+    const w = workers.find(x=>x.id===r.workerId);
+    const rec = attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===r.date);
+    if(!w||!rec) return;
+    const effectivePunchIn = rec.punchIn || w.dutyStart || '09:00';
+    const punchOut = rec.punchOut || r.time;
+    if(!punchOut) return;
+    const hoursWorked = _hoursBetween(effectivePunchIn, punchOut);
+    if(hoursWorked===null) return;
+    const prevOT = otLogs.find(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
+    _syncAutoOTFromPunch(w, rec, hoursWorked);
+    const newOT = otLogs.find(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
+    if(!prevOT && newOT) fixed++;
+  });
+  if(fixed>0){ saveToStorage(); showToast('✓ '+fixed+' missing OT log(s) repair ho gaye!','success'); }
+  else showToast('Sab OT logs theek hain — koi missing nahi','');
+  return fixed;
+}
 // Automatically syncs an OT log entry for hours worked beyond the standard 8-hour day,
 // valued at the same per-hour rate as basic pay. Tagged with autoFromPunch so it can be
 // found and updated (not duplicated) whenever a punch is re-approved/edited, while any
@@ -8400,15 +8483,13 @@ function _applyPunchToAttendance(r){
     w.days=presentDays.size;
   } else if(r.type==='out'){
     rec.punchOut=r.time;
-    w.status='absent'; // After punch out, mark as punched out
-    // Pay proportionally to actual hours worked vs a standard 8-hour working day —
-    // a short punch-in/punch-out (e.g. 1 hour out of a full day) should NOT earn a
-    // full day's basic pay. This is calculated fresh every time punch-out happens,
-    // and only from real punch data — it never overrides an admin's manual
-    // attendance edit (that path sets status directly and doesn't touch hoursWeight).
+    w.status='absent';
     const STANDARD_WORKDAY_HOURS = 8;
-    if(rec.punchIn && rec.punchOut){
-      const hoursWorked = _hoursBetween(rec.punchIn, rec.punchOut);
+    // Use actual punchIn if available, otherwise fall back to worker's dutyStart
+    // (handles cases where punch IN wasn't submitted but worker was clearly present)
+    const effectivePunchIn = rec.punchIn || w.dutyStart || '09:00';
+    if(effectivePunchIn && rec.punchOut){
+      const hoursWorked = _hoursBetween(effectivePunchIn, rec.punchOut);
       const expectedHours = STANDARD_WORKDAY_HOURS;
       if(hoursWorked!==null && expectedHours && expectedHours>0){
         let weight = hoursWorked / expectedHours;
@@ -8416,10 +8497,7 @@ function _applyPunchToAttendance(r){
         rec.hoursWeight = weight;
         rec.status = weight<=0 ? 'absent' : (weight>=1 ? 'present' : 'halfday');
       }
-      // Any hours worked BEYOND the standard 8-hour day are automatically logged as
-      // OT, paid at the same per-hour rate as basic pay (daily-equivalent-rate ÷ 8) —
-      // so working 1 extra hour on a ₹500/day (₹62.5/hr) job adds ₹62.5, not nothing.
-      _syncAutoOTFromPunch(w, rec, hoursWorked);
+      _syncAutoOTFromPunch(w, rec, hoursWorked||0);
     }
   }
 }
@@ -9599,7 +9677,7 @@ function _updateOTPreview(w){
   const prev  = document.getElementById('att_ot_amount_preview');
   if(!prev) return;
   if(hours > 0 && rate > 0){
-    prev.innerHTML = '<span style="color:#a05a00">⏰ OT Amount: <strong>₹'+Math.round(hours*rate).toLocaleString('en-IN')+'</strong> ('+hours+' hrs × ₹'+rate+')</span>';
+    prev.innerHTML = '<span style="color:#a05a00">⏰ OT Amount: <strong>₹'+Math.round(hours*rate).toLocaleString('en-IN')+'</strong> ('+hours+' hrs × ₹'+Math.round(rate)+')</span>';
   } else {
     prev.innerHTML = '';
   }
