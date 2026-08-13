@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>DJ Electric Pro</title>
+<meta name="description" content="DJ Electric Pro — employee attendance, salary, billing and site management for electrical contractors.">
+<meta name="theme-color" content="#003366">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DJ Electric">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext y='19' font-size='20'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 <style>
@@ -4757,8 +4764,8 @@ function openAttEdit(wid, date){
   document.getElementById('att_days').value = _autoDays;
   document.getElementById('att_days').style.background = '#e8f5e9';
   document.getElementById('att_days').title = 'Auto-calculated from attendance records this month';
-  document.getElementById('att_punch_in').value=rec?.punchIn||w.dutyStart||'09:00';
-  document.getElementById('att_punch_out').value=rec?.punchOut||w.dutyEnd||'18:00';
+  document.getElementById('att_punch_in').value=_toInputTime(rec?.punchIn||w.dutyStart||'09:00');
+  document.getElementById('att_punch_out').value=_toInputTime(rec?.punchOut||w.dutyEnd||'18:00');
   document.getElementById('att_date').value=date;
   document.getElementById('att_location').value=rec?.location||'';
   document.getElementById('att_note').value=rec?.note||'';
@@ -5717,9 +5724,25 @@ function openPunchModal(){
   };
   // Safety net: never leave the button stuck disabled, even if something unexpected
   // happens with the geolocation callbacks.
-  window._punchGpsSafetyTimer=setTimeout(_unlockPunchBtn, 6000);
+  window._punchGpsSafetyTimer=setTimeout(_unlockPunchBtn, 30000); // extended for 2-attempt flow
+
+  // Pre-check: if permission already denied, tell worker immediately
+  if(navigator.permissions){
+    navigator.permissions.query({name:'geolocation'}).then(function(result){
+      if(result.state==='denied'){
+        if(addrEl) addrEl.innerHTML='⚠️ <strong>Location blocked hai</strong><br><span style="font-size:10px">Chrome → 3 dots → Settings → Site settings → Location → Allow karo</span>';
+        if(coordEl) coordEl.textContent='Ya: Phone Settings → Apps → Chrome → Permissions → Location → Allow';
+        _unlockPunchBtn();
+      }
+    }).catch(()=>{});
+  }
 
   if(navigator.geolocation){
+    // Two-attempt strategy:
+    // 1st: high-accuracy GPS (good outdoors, may fail indoors/weak signal)
+    // 2nd: low-accuracy (uses cell towers + WiFi — works indoors, gives CURRENT location)
+    // Never use maximumAge/cached location — a cached position could be from a
+    // completely different place where the worker was minutes ago.
     navigator.geolocation.getCurrentPosition(function(pos){
       const lat=pos.coords.latitude.toFixed(6);
       const lng=pos.coords.longitude.toFixed(6);
@@ -5733,15 +5756,32 @@ function openPunchModal(){
           const short=addr.split(',').slice(0,4).join(', ');
           if(addrEl) addrEl.textContent='📍 '+short;
           window._punchLocation={lat,lng,address:short};
-        }).catch(()=>{
-          // Reverse-geocoding failed (network/rate-limit) — keep the coordinate-based
-          // address already set above rather than losing the location entirely.
-        });
+        }).catch(()=>{});
     },function(){
-      if(addrEl) addrEl.textContent='⚠️ GPS access denied — manual record hoga';
-      if(coordEl) coordEl.textContent='Browser settings to allow location';
-      _unlockPunchBtn();
-    },{enableHighAccuracy:true,timeout:10000});
+      // High-accuracy failed — try low-accuracy (cell towers + WiFi)
+      // This gives CURRENT location even indoors without GPS signal
+      navigator.geolocation.getCurrentPosition(function(pos){
+        const lat=pos.coords.latitude.toFixed(6);
+        const lng=pos.coords.longitude.toFixed(6);
+        if(coordEl) coordEl.textContent='📌 '+lat+'° N, '+lng+'° E (approx)';
+        window._punchLocation={lat,lng,address:'Lat: '+lat+', Lng: '+lng};
+        if(addrEl) addrEl.textContent='📍 Approx location — loading address...';
+        _unlockPunchBtn();
+        fetch('https://nominatim.openstreetmap.org/reverse?lat='+lat+'&lon='+lng+'&format=json')
+          .then(r=>r.json()).then(d=>{
+            const addr=d.display_name||'Location detected';
+            const short=addr.split(',').slice(0,4).join(', ');
+            if(addrEl) addrEl.textContent='📍 '+short+' (approx)';
+            window._punchLocation={lat,lng,address:short+' (approx)'};
+          }).catch(()=>{});
+      },function(){
+        // Both GPS and network location failed — either permission denied or
+        // device has no location capability at all
+        if(addrEl) addrEl.innerHTML='⚠️ <strong>Location permission denied</strong><br><span style="font-size:10px">Enable: Chrome → 3 dots → Settings → Site settings → Location → Allow</span>';
+        if(coordEl) coordEl.textContent='Ya phone Settings → Apps → Chrome → Permissions → Location → Allow';
+        _unlockPunchBtn();
+      },{enableHighAccuracy:false,timeout:10000,maximumAge:0});
+    },{enableHighAccuracy:true,timeout:12000,maximumAge:0});
   } else {
     if(addrEl) addrEl.textContent='⚠️ GPS not supported on this device';
     _unlockPunchBtn();
@@ -10226,6 +10266,14 @@ function toggleLanguage(){
 // manual attendance entry, e.g. "16:58") OR 12-hour "h:mm am/pm" format (what the
 // punch-clock actually saves via toLocaleTimeString, e.g. "4:58 pm") into minutes
 // since midnight. Returns null if unparseable.
+// Converts any time string (12hr "9:00 am" or already 24hr "09:00") to the
+// "HH:MM" format required by <input type="time">. Returns "" if unparseable.
+function _toInputTime(t){
+  const mins = _parseTimeToMinutes(t);
+  if(mins===null) return '';
+  const h=Math.floor(mins/60), m=mins%60;
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+}
 function _parseTimeToMinutes(t){
   if(!t || typeof t!=='string') return null;
   const s = t.trim().toLowerCase();
