@@ -1075,11 +1075,21 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
         </div>
       </div>
     </div>
-    <div id="eprHoursPreview" style="display:none;background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div id="eprHoursPreview" style="display:none;background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:12px;padding:12px 14px;margin-bottom:12px">
       <div style="font-size:11px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⏱ Hours & Pay Preview</div>
       <div id="eprHoursText" style="font-size:12px;color:var(--g600);margin-bottom:10px"></div>
-      <div class="fg" style="margin-bottom:0"><label class="lbl">OT Hours (auto-calculated — edit if needed)</label>
+      <div class="fg" style="margin-bottom:8px"><label class="lbl">OT Hours (auto-calculated — edit if needed)</label>
         <input type="number" class="inp" id="epr_ot_hours" min="0" step="0.25" value="0" oninput="_eprRecalcAndShowPreview(false)">
+      </div>
+      <div id="eprNightOTBox" style="display:none;background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="checkbox" id="epr_night_ot_cb" data-hours="0" checked style="width:18px;height:18px;flex-shrink:0;margin-top:1px;accent-color:#7b1fa2" oninput="_eprRecalcAndShowPreview(false)">
+          <div>
+            <div id="eprNightOTLabel" style="font-weight:700;font-size:12px;color:#7b1fa2"></div>
+            <div id="eprNightOTAmt" style="font-size:11px;color:var(--g600);margin-top:2px"></div>
+            <div style="font-size:10px;color:var(--g400);margin-top:1px">Pre-selected — uncheck karo agar nahi dena hai</div>
+          </div>
+        </label>
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -2628,6 +2638,43 @@ function exportBillsCSV(){
 // reviewed/edited — this fixes any bills already sitting in storage with that bad data.
 // It never reduces `received`, and only ever promotes a bill to 'paid' (never demotes
 // an already-paid bill), so it's safe to run any time.
+// Repairs duplicate salaryHistory records — same worker+month appearing more than
+// once (caused by an old bug where the quick 'Pay Salary' flow always created a new
+// record instead of updating an existing one for that month). Keeps whichever is
+// marked Paid with the most recent date (the real transaction), or the most recently
+// generated record if none are paid, and removes the rest.
+function _repairDuplicateSalaryHistory(silent){
+  const groups = {};
+  (salaryHistory||[]).forEach(h=>{
+    const key = h.workerId+'|'+h.month;
+    if(!groups[key]) groups[key]=[];
+    groups[key].push(h);
+  });
+  let removed=0;
+  Object.values(groups).forEach(group=>{
+    if(group.length<=1) return;
+    const paidOnes = group.filter(h=>h.paid);
+    let keep;
+    if(paidOnes.length>0){
+      keep = paidOnes.reduce((a,b)=>((b.paidDate||b.date||'') > (a.paidDate||a.date||'')) ? b : a);
+    } else {
+      keep = group.reduce((a,b)=>((b.date||'') > (a.date||'')) ? b : a);
+    }
+    group.forEach(h=>{
+      if(h.id!==keep.id){
+        _markDeleted('salaryHistory', h.id);
+        const idx = salaryHistory.findIndex(x=>x.id===h.id);
+        if(idx>=0) salaryHistory.splice(idx,1);
+        removed++;
+      }
+    });
+  });
+  if(removed>0) saveToStorage();
+  if(!silent && removed>0){
+    showToast('✓ '+removed+' duplicate salary record(s) fix ho gaye','success');
+  }
+  return removed;
+}
 function _repairAllBillsData(silent){
   let fixed=0;
   (bills||[]).forEach(b=>{
@@ -3436,16 +3483,28 @@ function adminRequests(){
               let hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
               const otAmt=Math.round(excessHrs*hourlyRate);
               const basicAmt=Math.round((w.salaryType==='daily'?(w.basicSalary||0):hourlyRate*8)*weight);
+              const nightSug=_nightOtSuggestion(r.time);
+              const nightAmt=nightSug.hours>0?Math.round(nightSug.hours*hourlyRate):0;
               return `<div style="background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:10px;padding:10px;margin-bottom:10px">
                 <div style="font-size:10px;color:var(--rb);font-weight:700;text-transform:uppercase;margin-bottom:6px">⏱ ${existingRec.punchIn} → ${r.time} = ${hrs.toFixed(2)}h worked</div>
                 <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px">
                   <span>Basic: <strong style="color:var(--ok)">₹${basicAmt.toLocaleString('en-IN')}</strong> (${weight>=1?'full day':Math.round(weight*100)+'%'})</span>
                   ${excessHrs>0?`<span>Auto OT: <strong style="color:#a05a00">${excessHrs}h = ₹${otAmt.toLocaleString('en-IN')}</strong></span>`:''}
                 </div>
-              </div>`;
+              </div>
+              ${nightSug.hours>0?`<div style="background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                  <input type="checkbox" id="night_ot_cb_${r.id}" data-hours="${nightSug.hours}" checked style="width:18px;height:18px;flex-shrink:0;margin-top:1px;accent-color:#7b1fa2">
+                  <div>
+                    <div style="font-weight:700;font-size:12px;color:#7b1fa2">🌙 Night OT — ${nightSug.label}</div>
+                    <div style="font-size:11px;color:var(--g600);margin-top:2px">${nightSug.hours} hrs = <strong style="color:#7b1fa2">₹${nightAmt.toLocaleString('en-IN')}</strong> extra</div>
+                    <div style="font-size:10px;color:var(--g400);margin-top:1px">Pre-selected — uncheck karo agar nahi dena hai</div>
+                  </div>
+                </label>
+              </div>`:''}`;
             })()}
             <div style="display:flex;gap:8px;margin-bottom:8px">
-              <button onclick="approvePunchReq(${r.id})" style="flex:1;padding:9px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--ok),#009624);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;gap:5px">
+              <button onclick="${r.type==='out'?'approvePunchReqWithNightOT('+r.id+')':'approvePunchReq('+r.id+')'}" style="flex:1;padding:9px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--ok),#009624);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;gap:5px">
                 <span class="mi" style="font-size:15px">check_circle</span>Approve
               </button>
               <button onclick="rejectPunchReq(${r.id})" style="flex:1;padding:9px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--err),#c62828);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;gap:5px">
@@ -5373,6 +5432,7 @@ function workerAdvance(){
   </div>`;
 }
 function workerSalaryView(){
+  _repairDuplicateSalaryHistory(true); // silently self-heal any legacy duplicate records
   const w=loggedInWorker||workers[0];
   if(!window._workerSalMonth){
     const now=new Date();
@@ -5462,19 +5522,22 @@ function workerSalaryView(){
       </div>
       ${myOTPending.length?`
       <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:12px;padding:12px;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:700;color:#a05a00;margin-bottom:8px;text-transform:uppercase">⏳ Pending OT — ₹${myOTPending.reduce((s,o)=>s+(typeof o.amount==='number'?o.amount:o.hours*w.otRate),0).toLocaleString('en-IN')}</div>
+        <div style="font-size:11px;font-weight:700;color:#a05a00;margin-bottom:8px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center">
+          <span>⏱ OT This Month</span>
+          <span style="background:rgba(0,150,50,.12);color:var(--ok);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700">✓ Added in Salary</span>
+        </div>
         ${myOTPending.map(o=>`
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,193,7,.3)">
           <div>
             <div style="font-size:13px;font-weight:600">${o.date}</div>
-            <div style="font-size:11px;color:#7a5a00;margin-top:2px">${o.reason.split('/')[0]}</div>
+            <div style="font-size:11px;color:#7a5a00;margin-top:2px">${o.hours}h OT</div>
           </div>
           <div style="text-align:right">
             <div style="font-weight:700;color:#a05a00">${o.hours}h</div>
             <div style="font-size:13px;font-weight:700;color:var(--rb)">₹${(typeof o.amount==='number'?o.amount:o.hours*w.otRate).toLocaleString('en-IN')}</div>
           </div>
         </div>`).join('')}
-      </div>`:`<div class="card card-sm" style="text-align:center;color:var(--g400);padding:20px"><span class="mi" style="font-size:32px;color:var(--g200);display:block;margin-bottom:6px">schedule</span>No pending OT</div>`}
+      </div>`:`<div class="card card-sm" style="text-align:center;color:var(--g400);padding:20px"><span class="mi" style="font-size:32px;color:var(--g200);display:block;margin-bottom:6px">schedule</span>Is mahine koi OT nahi</div>`}
 
       ${myOTPaid.length?`
       <div style="font-weight:700;font-size:13px;color:var(--g600);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">✓ Paid OT</div>
@@ -5551,9 +5614,13 @@ function workerLedgerView(){
   const balance = Math.max(0, s.net||0);
   const pct = monthEarned>0?Math.round((balance/monthEarned)*100):0;
 
-  // Build real transactions for this worker, filtered to selected month
+  // Build real transactions — salary filtered by WHICH MONTH it covers (h.month),
+  // not by when admin happened to pay it. Paying May's salary on July 15 should
+  // NOT appear in July's ledger — it belongs in May's ledger.
   workerLedger.length=0;
-  (salaryHistory||[]).filter(h=>h.workerId===w.id&&h.paid&&((h.paidDate||h.date||'').startsWith(selMonth))).forEach(h=>{
+  const [sly,slm]=selMonth.split('-').map(Number);
+  const selMonthLabel=new Date(sly,slm-1,1).toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  (salaryHistory||[]).filter(h=>h.workerId===w.id&&h.paid&&h.month===selMonthLabel).forEach(h=>{
     workerLedger.push({type:'credit',desc:h.month+' Salary',amount:h.net||0,date:h.paidDate||h.date||''});
   });
   (advanceRequests||[]).filter(r=>r.workerId===w.id&&r.status==='approved'&&(r.date||'').startsWith(selMonth)).forEach(r=>{
@@ -5917,6 +5984,7 @@ function _calcPeriodSalary(w, start, end){
 }
 
 function adminSalary(){
+  _repairDuplicateSalaryHistory(true); // silently self-heal any legacy duplicate records
   const now=new Date();
   const month=now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
   const lastMonthDate=new Date(now.getFullYear(),now.getMonth()-1,1);
@@ -6392,14 +6460,18 @@ function confirmPaySalary(){
     if(r.foodAmt&&!r.foodPaid) r.foodPaid=true;
     if(r.travelAmt&&!r.travelPaid) r.travelPaid=true;
   });
-  // Add to history
+  // Add to history — find-and-update any existing record for this worker+month
+  // instead of always creating a new one, so a month is never represented by two
+  // separate (and possibly different-amount) salaryHistory records.
+  const existingIdx=(salaryHistory||[]).findIndex(h=>h.workerId===wid&&h.month===month);
   const histRec={
-    id:Date.now(),workerId:wid,month,
+    id:existingIdx>=0?salaryHistory[existingIdx].id:Date.now(),workerId:wid,month,
     basic:s.earnedBasic,ot:s.otAmt,food:s.foodAmt||0,travel:s.travelAmt||0,deductions:w.advance,net:Math.max(0,s.net),
-    date:today,mode,paid:true,note,
-    slipNo:'SAL-'+Date.now()
+    date:today,mode,paid:true,paidDate:today,note,
+    slipNo:existingIdx>=0?(salaryHistory[existingIdx].slipNo||'SAL-'+Date.now()):'SAL-'+Date.now()
   };
-  salaryHistory.unshift(histRec);
+  if(existingIdx>=0) salaryHistory[existingIdx]=histRec;
+  else salaryHistory.unshift(histRec);
   // Save for slip
   _lastPaidSlip={w,s,mode,month,today,note,net:Math.max(0,s.net),slipNo:histRec.slipNo};
   // Reset advance
@@ -6415,7 +6487,7 @@ function confirmPaySalary(){
 }
 
 function buildSalarySlipHTML(slipData, forPrint=false){
-  const {w,s,mode,month,today,note,net,slipNo}=slipData;
+  const {w,s,mode,month,today,note,net,slipNo,paid}=slipData;
   const otRows=(otLogs||[]).filter(o=>o.workerId===w.id&&o.paid).slice(0,5);
   return `
   <div id="salarySlipPrintArea" style="font-family:'Roboto',Arial,sans-serif;background:#fff;${forPrint?'':'max-width:660px;margin:0 auto;'}">
@@ -6452,7 +6524,7 @@ function buildSalarySlipHTML(slipData, forPrint=false){
           ${w.joinDate?`<div style="font-size:12px;color:#8a93a8;margin-top:2px">Join Date: ${w.joinDate}</div>`:''}
         </div>
         <div style="text-align:right">
-          <div style="font-size:12px;color:#5a6278">Days Present: <strong style="color:#003366;font-size:16px">${s.days}</strong></div>
+          <div style="font-size:12px;color:#5a6278">Days Present: <strong style="color:#003366;font-size:16px">${s.days||0}</strong></div>
           <div style="font-size:12px;color:#5a6278;margin-top:4px">Basic Rate: <strong style="color:#003366">₹${w.basicSalary.toLocaleString('en-IN')}/${w.salaryType==='monthly'?'month':'day'}</strong></div>
           <div style="font-size:12px;color:#5a6278;margin-top:4px">Payment Mode: <strong style="color:#003366">${mode}</strong></div>
         </div>
@@ -6498,10 +6570,10 @@ function buildSalarySlipHTML(slipData, forPrint=false){
           <div style="color:rgba(255,255,255,.6);font-size:11px;margin-top:4px">${numberToWords(net)} Rupees Only</div>
         </div>
         <div style="text-align:right">
-          <div style="background:rgba(0,200,83,.2);border:2px solid rgba(0,200,83,.4);border-radius:10px;padding:10px 18px;display:inline-block">
-            <div style="color:#a0ffb0;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Status</div>
-            <div style="color:#00ff88;font-size:18px;font-weight:800">✓ PAID</div>
-            <div style="color:rgba(255,255,255,.6);font-size:11px">${today}</div>
+          <div style="background:${paid!==false?'rgba(0,200,83,.2)':'rgba(255,152,0,.2)'};border:2px solid ${paid!==false?'rgba(0,200,83,.4)':'rgba(255,152,0,.4)'};border-radius:10px;padding:10px 18px;display:inline-block">
+            <div style="color:${paid!==false?'#a0ffb0':'#ffd080'};font-size:11px;text-transform:uppercase;letter-spacing:.5px">Status</div>
+            <div style="color:${paid!==false?'#00ff88':'#ffa040'};font-size:18px;font-weight:800">${paid!==false?'✓ PAID':'⏳ UNPAID'}</div>
+            <div style="color:rgba(255,255,255,.6);font-size:11px">${today||'—'}</div>
           </div>
         </div>
       </div>
@@ -6531,12 +6603,13 @@ function openSalarySlipFromHistory(histId){
   if(!w) return;
   const slipData={
     w,
-    s:{earnedBasic:h.basic,otAmt:h.ot,gross:h.basic+h.ot,otHours:0},
+    s:{earnedBasic:h.basic,otAmt:h.ot,gross:h.basic+h.ot,otHours:h.otHours||0,days:h.days||0},
     mode:h.mode,
     month:h.month,
-    today:h.date,
+    today:h.paidDate||h.date,
     note:h.note||'',
     net:h.net,
+    paid:h.paid,
     slipNo:h.slipNo||('SAL-'+h.id)
   };
   openSalarySlip(slipData);
@@ -8151,6 +8224,47 @@ App kholein → Employee tab select karein → Yeh ID aur Enter Password
 // ═══════════════════════════════════════════
 // PUNCH REQUEST APPROVAL FUNCTIONS
 // ═══════════════════════════════════════════
+// Night OT suggestion — 4 hrs if punch-out is at or after 9 PM, 8 hrs if at or
+// after 11 PM. These are pre-ticked in the UI but admin can uncheck before approving.
+function _nightOtSuggestion(punchOutTime){
+  if(!punchOutTime) return {hours:0, label:''};
+  const mins = _parseTimeToMinutes(punchOutTime);
+  if(mins===null) return {hours:0, label:''};
+  if(mins >= _parseTimeToMinutes('11:00 pm')) return {hours:8, label:'Late night (11 PM+)'};
+  if(mins >= _parseTimeToMinutes('9:00 pm'))  return {hours:4, label:'Night shift (9 PM+)'};
+  return {hours:0, label:''};
+}
+// Approves a punch request WITH the night-OT toggle from the card checkbox.
+// Called instead of plain approvePunchReq() when the card has a night-OT suggestion.
+function approvePunchReqWithNightOT(rid){
+  const r=punchRequests.find(x=>x.id===rid);if(!r)return;
+  const cb=document.getElementById('night_ot_cb_'+rid);
+  const extraOT = cb && cb.checked ? (+cb.dataset.hours||0) : 0;
+  r.status='approved';
+  r.approvedAt=new Date().toISOString();
+  _applyPunchToAttendance(r);
+  if((r.travelAmt||0)>0){
+    const attRec=attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===r.date);
+    if(attRec){ attRec.travelAmt=(attRec.travelAmt||0)+r.travelAmt; attRec.travelMode=r.travelMode||attRec.travelMode||''; }
+  }
+  // Add the extra night-OT log if the admin left it ticked
+  if(extraOT>0){
+    const w=workers.find(x=>x.id===r.workerId);
+    if(w){
+      const hourlyRate=w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+      const amount=Math.round(extraOT*hourlyRate);
+      // Upsert alongside any existing auto-OT so they don't double-count
+      const existingNight=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.nightOT);
+      const nightRec={id:Date.now()+Math.floor(Math.random()*999),workerId:r.workerId,date:r.date,hours:extraOT,amount,paid:false,reason:'Night OT — '+(extraOT===8?'11 PM ke baad (8h extra)':'9 PM ke baad (4h extra)'),nightOT:true};
+      if(existingNight>=0) otLogs[existingNight]=nightRec; else otLogs.push(nightRec);
+    }
+  }
+  saveToStorage();
+  showToast('✓ '+r.workerName+' — Punch OUT Approved'+(extraOT>0?' + '+extraOT+'h Night OT 🌙':'')+' ✅','success');
+  const pendingCount=punchRequests.filter(x=>x.status==='pending').length+advanceRequests.filter(x=>x.status==='pending').length;
+  const bd=document.getElementById('sb_req_badge');if(bd){bd.textContent=pendingCount;bd.style.display=pendingCount?'inline':'none';}
+  adminTab('requests');
+}
 function approvePunchReq(rid){
   const r=punchRequests.find(x=>x.id===rid);if(!r)return;
   r.status='approved';
@@ -8216,12 +8330,12 @@ function _syncAutoOTFromPunch(w, rec, hoursWorked){
   if(existingIdx>=0){
     otLogs[existingIdx].hours = excessHours;
     otLogs[existingIdx].amount = amount;
-    otLogs[existingIdx].reason = 'Auto — '+hoursWorked.toFixed(2)+'h worked (8h standard + '+excessHours+'h extra)';
+    otLogs[existingIdx].reason = hoursWorked.toFixed(1)+'h kaam kiya — '+excessHours+'h OT (8h se zyada)';
   } else {
     otLogs.push({
       id: Date.now()+Math.floor(Math.random()*1000),
       workerId: w.id, date: rec.date, hours: excessHours, amount, paid: false,
-      reason: 'Auto — '+hoursWorked.toFixed(2)+'h worked (8h standard + '+excessHours+'h extra)',
+      reason: hoursWorked.toFixed(1)+'h kaam kiya — '+excessHours+'h OT (8h se zyada)',
       autoFromPunch: true
     });
   }
@@ -8275,17 +8389,19 @@ function _timeSelectHTML(currentVal){
   let found=false;
   for(let h=0;h<24;h++){
     for(let m=0;m<60;m+=10){
-      const val=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
-      if(val===currentVal) found=true;
       const label=new Date(2000,0,1,h,m).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true});
+      const val=label.toLowerCase(); // e.g. "9:00 am" — same format used everywhere else in the app
+      if(val===String(currentVal).toLowerCase()) found=true;
       opts.push({val,label});
     }
   }
   if(currentVal && !found){
-    const [ch,cm]=currentVal.split(':').map(Number);
-    const label=new Date(2000,0,1,ch||0,cm||0).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true});
-    opts.push({val:currentVal,label:label+' (current)'});
-    opts.sort((a,b)=>a.val.localeCompare(b.val));
+    // currentVal doesn't land on a clean 10-minute mark (e.g. a punch at 9:07) — add it
+    // as its own option so the exact original time is never silently lost/changed.
+    const mins = _parseTimeToMinutes(currentVal);
+    const label = mins!==null ? new Date(2000,0,1,Math.floor(mins/60),mins%60).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true}) : currentVal;
+    opts.push({val:currentVal, label:label+' (current)'});
+    opts.sort((a,b)=>(_parseTimeToMinutes(a.val)??0)-(_parseTimeToMinutes(b.val)??0));
   }
   return opts.map(o=>`<option value="${o.val}" ${o.val===currentVal?'selected':''}>${o.label}</option>`).join('');
 }
@@ -8342,7 +8458,28 @@ function _eprRecalcAndShowPreview(resetOT){
   const hourlyRate = w.salaryType==='daily' ? (w.basicSalary||0)/8 : (()=>{const [yy,mm]=date.split('-').map(Number); return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
   const basicAmt = Math.round((w.salaryType==='daily'?(w.basicSalary||0):hourlyRate*8)*weight);
   const otAmt = Math.round(otHrsUsed*hourlyRate);
-  document.getElementById('eprHoursText').innerHTML = existingRec.punchIn+' → '+time+' = <strong>'+hrs.toFixed(2)+'h</strong> worked<br>Basic: <strong style="color:var(--ok)">₹'+basicAmt.toLocaleString('en-IN')+'</strong> ('+(weight>=1?'full day':Math.round(weight*100)+'%')+')'+(otHrsUsed>0?' • OT: <strong style="color:#a05a00">₹'+otAmt.toLocaleString('en-IN')+'</strong>':'');
+  const nightSug=_nightOtSuggestion(time);
+  const nightBox=document.getElementById('eprNightOTBox');
+  const nightCb=document.getElementById('epr_night_ot_cb');
+  const nightLabel=document.getElementById('eprNightOTLabel');
+  const nightAmt=document.getElementById('eprNightOTAmt');
+  if(nightBox&&nightCb){
+    if(nightSug.hours>0){
+      nightCb.dataset.hours=nightSug.hours;
+      if(resetOT) nightCb.checked=true; // auto-tick when time changes
+      const nRate=hourlyRate;
+      const nAmt=Math.round(nightSug.hours*nRate);
+      if(nightLabel) nightLabel.textContent='🌙 Night OT — '+nightSug.label;
+      if(nightAmt) nightAmt.textContent=nightSug.hours+' hrs = ₹'+nAmt.toLocaleString('en-IN')+' extra';
+      nightBox.style.display='block';
+    } else {
+      nightBox.style.display='none';
+      if(nightCb) nightCb.checked=false;
+    }
+  }
+  const nightExtraHrs = (nightSug.hours>0 && nightCb&&nightCb.checked) ? nightSug.hours : 0;
+  const nightExtraAmt = Math.round(nightExtraHrs*hourlyRate);
+  document.getElementById('eprHoursText').innerHTML = existingRec.punchIn+' → '+time+' = <strong>'+hrs.toFixed(2)+'h</strong> worked<br>Basic: <strong style="color:var(--ok)">₹'+basicAmt.toLocaleString('en-IN')+'</strong> ('+(weight>=1?'full day':Math.round(weight*100)+'%')+')'+(otHrsUsed>0?' • OT: <strong style="color:#a05a00">₹'+otAmt.toLocaleString('en-IN')+'</strong>':'')+(nightExtraHrs>0?' • Night OT: <strong style="color:#7b1fa2">₹'+nightExtraAmt.toLocaleString('en-IN')+'</strong>':'');
 }
 
 function saveEditPunchReq(){
@@ -8377,10 +8514,26 @@ function saveEditPunchReq(){
             otLogs[existingIdx].amount=amount;
             otLogs[existingIdx].reason='Admin adjusted OT hours during approval';
           } else {
-            otLogs.push({id:Date.now()+Math.floor(Math.random()*1000),workerId:r.workerId,date:r.date,hours:manualOT,amount,paid:false,reason:'Admin adjusted OT hours during approval',autoFromPunch:true});
+            otLogs.push({id:Date.now()+Math.floor(Math.random()*1000),workerId:r.workerId,date:r.date,hours:manualOT,amount,paid:false,reason:'OT done',autoFromPunch:true});
           }
         }
       }
+    }
+  }
+  // Night-OT checkbox — create/update/remove the night-OT log entry separately from auto-OT
+  if(r.type==='out'){
+    const nightCb=document.getElementById('epr_night_ot_cb');
+    const nightHrs=nightCb&&nightCb.checked?+(nightCb.dataset.hours||0):0;
+    const existingNight=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.nightOT);
+    if(nightHrs>0){
+      const w=workers.find(x=>x.id===r.workerId);
+      if(w){
+        const hourlyRate=w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+        const nightRec={id:existingNight>=0?otLogs[existingNight].id:Date.now()+Math.floor(Math.random()*999),workerId:r.workerId,date:r.date,hours:nightHrs,amount:Math.round(nightHrs*hourlyRate),paid:false,reason:'Night OT — '+(nightHrs===8?'11 PM ke baad (8h extra)':'9 PM ke baad (4h extra)'),nightOT:true};
+        if(existingNight>=0) otLogs[existingNight]=nightRec; else otLogs.push(nightRec);
+      }
+    } else {
+      if(existingNight>=0){ _markDeleted('otLogs', otLogs[existingNight].id); otLogs.splice(existingNight,1); }
     }
   }
   // Save travelling expense to attendance record (same as direct Approve flow)
@@ -8897,7 +9050,13 @@ function _wpAttendance(w){
           const colorMap = {present:'#2e7d32',absent:'#c62828',halfday:'#e65100',holiday:'#6a1b9a',leave:'#283593',paid_leave:'#1b5e20',unpaid_leave:'#b71c1c'};
           const dotMap = {present:'✓',absent:'✗',halfday:'½',holiday:'H',leave:'L',paid_leave:'PL',unpaid_leave:'UL'};
           const isToday = dateStr===new Date().toISOString().split('T')[0];
-          return `<div onclick="_wpEditDay(${w.id},'${dateStr}')" style="text-align:center;padding:6px 2px;border-radius:8px;cursor:pointer;background:${bgMap[st]||'#f8f9fa'};border:${isToday?'2px solid var(--rb)':'1.5px solid transparent'};transition:all .1s" title="${dateStr}">
+          const dotLabelMap = {present:'Present',absent:'Absent',halfday:'Half Day',holiday:'Holiday',leave:'Leave',paid_leave:'Paid Leave',unpaid_leave:'Unpaid Leave'};
+          const tipParts=[dateStr];
+          if(st) tipParts.push(dotLabelMap[st]||st);
+          if(rec&&rec.punchIn) tipParts.push('In: '+rec.punchIn);
+          if(rec&&rec.punchOut) tipParts.push('Out: '+rec.punchOut);
+          const tooltip=tipParts.join(' • ');
+          return `<div onclick="_wpEditDay(${w.id},'${dateStr}')" style="text-align:center;padding:6px 2px;border-radius:8px;cursor:pointer;background:${bgMap[st]||'#f8f9fa'};border:${isToday?'2px solid var(--rb)':'1.5px solid transparent'};transition:all .1s" title="${tooltip}">
             <div style="font-size:11px;font-weight:700;color:${colorMap[st]||'var(--g600)'}">${day}</div>
             <div style="font-size:9px;font-weight:700;color:${colorMap[st]||'var(--g300)'};margin-top:1px">${dotMap[st]||'—'}</div>
           </div>`;
