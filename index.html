@@ -224,7 +224,7 @@ html,body{height:100%;font-family:'Roboto',sans-serif;background:var(--off);colo
 ═══════════════════════════════════════════ */
 .fg{margin-bottom:14px;}
 .lbl{display:block;font-size:11px;font-weight:700;color:var(--rb);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;}
-.inp{width:100%;padding:10px 13px;border-radius:10px;border:2px solid var(--g200);font-size:14px;color:var(--g800);background:#fff;transition:all .2s;outline:none;font-family:'Roboto',sans-serif;}
+.inp{width:100%;padding:10px 13px;border-radius:10px;border:2px solid var(--g200);font-size:14px;color:var(--g800);background:#fff;transition:all .2s;outline:none;font-family:'Roboto',sans-serif;box-sizing:border-box;}
 .inp:focus{border-color:var(--rb);box-shadow:0 0 0 3px rgba(0,51,102,.08);}
 .sel{width:100%;padding:10px 13px;border-radius:10px;border:2px solid var(--g200);font-size:14px;color:var(--g800);background:#fff;transition:all .2s;outline:none;appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23003366'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
@@ -319,7 +319,7 @@ html,body{height:100%;font-family:'Roboto',sans-serif;background:var(--off);colo
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:16px;}
 .modal-overlay.open{display:flex;}
-.modal-box{background:#fff;width:100%;max-width:520px;border-radius:20px;padding:28px;animation:mIn .3s ease;position:relative;max-height:90vh;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;}
+.modal-box{background:#fff;width:100%;max-width:520px;border-radius:20px;padding:28px;animation:mIn .3s ease;position:relative;max-height:90vh;overflow-y:auto;}
 @keyframes mIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
 .modal-title{font-size:18px;font-weight:700;color:var(--rb);margin-bottom:20px;font-family:'Rajdhani',sans-serif;}
 .modal-close{position:absolute;top:14px;right:16px;background:none;border:none;font-size:24px;color:var(--g400);cursor:pointer;}
@@ -1085,16 +1085,35 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
       <div id="eprHoursPreview" style="display:none;background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:12px;padding:12px 14px;margin-bottom:12px">
       <div style="font-size:11px;font-weight:700;color:var(--rb);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⏱ Hours & Pay Preview</div>
       <div id="eprHoursText" style="font-size:12px;color:var(--g600);margin-bottom:10px"></div>
-      <div class="fg" style="margin-bottom:8px"><label class="lbl">OT Hours (auto-calculated — edit if needed)</label>
-        <input type="number" class="inp" id="epr_ot_hours" min="0" step="0.25" value="0" oninput="_eprRecalcAndShowPreview(false)">
+      <!-- Auto OT checkbox — admin can uncheck to skip adding OT -->
+      <div id="eprAutoOTBox" style="display:none;background:rgba(255,152,0,.07);border:1.5px solid rgba(255,152,0,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="checkbox" id="epr_auto_ot_cb" data-hours="0" checked style="width:18px;height:18px;flex-shrink:0;margin-top:1px;accent-color:#a05a00" oninput="_eprRecalcAndShowPreview(false)">
+          <div>
+            <div id="eprAutoOTLabel" style="font-weight:700;font-size:12px;color:#a05a00"></div>
+            <div id="eprAutoOTAmt" style="font-size:11px;color:var(--g600);margin-top:2px"></div>
+            <div style="font-size:10px;color:var(--g400);margin-top:1px">Pre-selected — uncheck karo agar nahi dena hai</div>
+          </div>
+        </label>
       </div>
-      <div id="eprNightOTBox" style="display:none;background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px">
+      <!-- Night OT checkbox -->
+      <div id="eprNightOTBox" style="display:none;background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px">
         <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
           <input type="checkbox" id="epr_night_ot_cb" data-hours="0" checked style="width:18px;height:18px;flex-shrink:0;margin-top:1px;accent-color:#7b1fa2" oninput="_eprRecalcAndShowPreview(false)">
           <div>
             <div id="eprNightOTLabel" style="font-weight:700;font-size:12px;color:#7b1fa2"></div>
             <div id="eprNightOTAmt" style="font-size:11px;color:var(--g600);margin-top:2px"></div>
             <div style="font-size:10px;color:var(--g400);margin-top:1px">Pre-selected — uncheck karo agar nahi dena hai</div>
+          </div>
+        </label>
+      </div>
+      <!-- Half Day override -->
+      <div style="background:rgba(255,152,0,.07);border:1.5px solid rgba(255,152,0,.25);border-radius:10px;padding:10px 12px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <input type="checkbox" id="epr_halfday_cb" style="width:18px;height:18px;flex-shrink:0;accent-color:var(--warn)" onchange="_eprRecalcAndShowPreview(false)">
+          <div>
+            <div style="font-weight:700;font-size:12px;color:#a05a00">◐ Mark as Half Day</div>
+            <div style="font-size:10px;color:var(--g400);margin-top:2px">Time pass ya kuch ghante ka kaam — chahe punch in/out kuch bhi ho</div>
           </div>
         </label>
       </div>
@@ -1444,7 +1463,7 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
 
 <!-- Attendance Edit Modal -->
 <div class="modal-overlay" id="attEditModal">
-  <div class="modal-box" style="max-width:480px;overflow:hidden;width:100%;box-sizing:border-box">
+  <div class="modal-box" style="max-width:480px">
     <button class="modal-close mi" onclick="closeModal('attEditModal')">close</button>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
       <div style="width:42px;height:42px;background:linear-gradient(135deg,var(--rb),var(--bm));border-radius:12px;display:flex;align-items:center;justify-content:center">
@@ -1484,11 +1503,11 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
       <div class="row2">
         <div class="fg" style="margin:0">
           <label class="lbl">Punch In Time</label>
-          <input type="time" class="inp" id="att_punch_in" value="09:00" onchange="calcAutoFood();updateAllowancePreview()">
+          <select class="sel" id="att_punch_in" onchange="calcAutoFood();updateAllowancePreview();_attOTRecalc()"></select>
         </div>
         <div class="fg" style="margin:0">
           <label class="lbl">Punch Out Time</label>
-          <input type="time" class="inp" id="att_punch_out" value="18:00" onchange="calcAutoFood();updateAllowancePreview();_checkNightOTSuggestion()">
+          <select class="sel" id="att_punch_out" onchange="calcAutoFood();updateAllowancePreview();_checkNightOTSuggestion();_attOTRecalc()"></select>
         </div>
       </div>
       <div class="fg" style="margin-top:10px;margin-bottom:0">
@@ -1567,19 +1586,22 @@ console.log('[DJ Electric] Firebase SDK loaded from CDN');
     <!-- OT Section -->
     <div id="att_night_ot_suggestion"></div>
     <div style="background:rgba(255,152,0,.07);border-radius:12px;padding:14px;margin-bottom:16px;border:1.5px solid rgba(255,152,0,.2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:#a05a00;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px">
+          <span class="mi" style="font-size:16px">more_time</span> Overtime (OT)
         </div>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="att_ot_enable" onchange="toggleAttOT()" style="width:15px;height:15px;accent-color:var(--warn)">
           <span style="font-size:12px;font-weight:700;color:#a05a00">Add OT</span>
         </label>
       </div>
-      <div id="att_ot_fields" style="display:none;width:100%;box-sizing:border-box">
-        <div class="row2" style="width:100%;box-sizing:border-box">
-          <div class="fg" style="margin:0">
+      <div id="att_ot_fields" style="display:none">
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <div class="fg" style="margin:0;flex:1;min-width:0">
             <label class="lbl">OT Hours</label>
             <input type="number" class="inp" id="att_ot_hours" placeholder="e.g. 2" min="0.5" max="12" step="0.5" value="2" oninput="_updateOTPreview(null)">
           </div>
-          <div class="fg" style="margin:0">
+          <div class="fg" style="margin:0;flex:1;min-width:0">
             <label class="lbl">OT Rate (₹/hr)</label>
             <input type="number" class="inp" id="att_ot_rate" placeholder="e.g. 150" min="0" value="" oninput="_updateOTPreview(null)">
           </div>
@@ -4745,32 +4767,11 @@ function calcHours(pIn, pOut){
   }catch(e){return '—';}
 }
 
-function _checkNightOTSuggestion(){
-  const wid = +document.getElementById('att_wid').value;
-  const date = document.getElementById('att_date').value;
-  const w = workers.find(x=>x.id===wid);
-  if(!w||!date) return;
-  const punchOutInput = document.getElementById('att_punch_out').value; // HH:MM 24hr
-  // Convert HH:MM to 12hr for _nightOtSuggestion
-  const [hh,mm] = punchOutInput.split(':').map(Number);
-  if(isNaN(hh)) return;
-  const period = hh >= 12 ? 'pm' : 'am';
-  const h12 = hh > 12 ? hh-12 : (hh===0 ? 12 : hh);
-  const timeStr = h12+':'+(mm<10?'0':'')+mm+' '+period;
-  const nightSug = _nightOtSuggestion(timeStr);
-  const nightSugBox = document.getElementById('att_night_ot_suggestion');
-  const otEnable = document.getElementById('att_ot_enable');
-  const otFields = document.getElementById('att_ot_fields');
-  const existingOT = otLogs.find(o=>o.workerId===wid&&o.date===date);
-  if(nightSugBox && nightSug.hours>0 && !existingOT){
-    const hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm2]=date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm2)/8;})();
-    const nightAmt = Math.round(nightSug.hours*hourlyRate);
-    if(otEnable&&!otEnable.checked){ otEnable.checked=true; if(otFields) otFields.style.display='block'; if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value=nightSug.hours; if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value=Math.round(hourlyRate); if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value='Night OT — '+nightSug.label; _updateOTPreview(w); }
-    nightSugBox.innerHTML=`<div style="background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#7b1fa2">🌙 Night OT — ${nightSug.label}</div><div style="font-size:11px;color:var(--g600);margin-top:3px">${nightSug.hours}h × ₹${Math.round(hourlyRate)}/hr = <strong style="color:#7b1fa2">₹${nightAmt}</strong></div></div>`;
-  } else if(nightSugBox && nightSug.hours===0){
-    nightSugBox.innerHTML='';
-  }
-}
+// Global bridge so onchange handlers can call the local _refreshAttOT function
+// defined inside openAttEdit scope
+let _attOTRecalcFn = null;
+function _attOTRecalc(){ if(typeof _attOTRecalcFn==='function') _attOTRecalcFn(); }
+function _checkNightOTSuggestion(){ _attOTRecalc(); }
 function openAttEdit(wid, date){
   const w=workers.find(x=>x.id===+wid);
   if(!w) return;
@@ -4788,8 +4789,35 @@ function openAttEdit(wid, date){
   document.getElementById('att_days').value = _autoDays;
   document.getElementById('att_days').style.background = '#e8f5e9';
   document.getElementById('att_days').title = 'Auto-calculated from attendance records this month';
-  document.getElementById('att_punch_in').value=_toInputTime(rec?.punchIn||w.dutyStart||'09:00');
-  document.getElementById('att_punch_out').value=_toInputTime(rec?.punchOut||w.dutyEnd||'18:00');
+  // Populate smart time selects — 10-min intervals, HH:MM values, readable AM/PM labels
+  function _buildTimeOpts(selId, currentVal){
+    const sel = document.getElementById(selId);
+    if(!sel) return;
+    sel.innerHTML='';
+    for(let h=0;h<24;h++){
+      for(let m=0;m<60;m+=10){
+        const val = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+        const label = new Date(2000,0,1,h,m).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true});
+        const opt = document.createElement('option');
+        opt.value=val; opt.textContent=label;
+        if(val===currentVal) opt.selected=true;
+        sel.appendChild(opt);
+      }
+    }
+    // If currentVal not found (odd minute), add it
+    if(sel.value!==currentVal && currentVal){
+      const opt=document.createElement('option');
+      const [ch,cm]=currentVal.split(':').map(Number);
+      opt.value=currentVal;
+      opt.textContent=new Date(2000,0,1,ch||0,cm||0).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true})+' ★';
+      opt.selected=true;
+      sel.insertBefore(opt, sel.options[0]);
+    }
+  }
+  const piVal24 = _toInputTime(rec?.punchIn||w.dutyStart||'09:00');
+  const poVal24 = _toInputTime(rec?.punchOut||w.dutyEnd||'18:00');
+  _buildTimeOpts('att_punch_in', piVal24);
+  _buildTimeOpts('att_punch_out', poVal24);
   document.getElementById('att_date').value=date;
   document.getElementById('att_location').value=rec?.location||'';
   document.getElementById('att_note').value=rec?.note||'';
@@ -4814,44 +4842,89 @@ function openAttEdit(wid, date){
   // Show/hide leave info
   onAttStatusChange();
 
-  // OT — check if OT log exists for this date+worker
+  // Auto-calculate OT from punch times
+  function _calcAttOT(){
+    const piVal = document.getElementById('att_punch_in').value;   // HH:MM
+    const poVal = document.getElementById('att_punch_out').value;  // HH:MM
+    if(!piVal||!poVal) return null;
+    const [ph,pm] = piVal.split(':').map(Number);
+    const [oh,om] = poVal.split(':').map(Number);
+    let totalMins = (oh*60+om) - (ph*60+pm);
+    if(totalMins<=0) totalMins += 24*60; // overnight
+    const hoursWorked = Math.round(totalMins/60*100)/100;
+    const otHours = Math.round(Math.max(0, hoursWorked-8)*100)/100;
+    return {hoursWorked, otHours};
+  }
+
+  // OT section wiring
   const existingOT = otLogs.find(o=>o.workerId===+wid && o.date===date);
   const otEnable = document.getElementById('att_ot_enable');
   const otFields = document.getElementById('att_ot_fields');
   const otExisting = document.getElementById('att_ot_existing');
-  if(otEnable) otEnable.checked = !!existingOT;
-  if(otFields) otFields.style.display = existingOT?'block':'none';
-  if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = existingOT?existingOT.hours:2;
-  if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = existingOT?Math.round(existingOT.amount/existingOT.hours):(w.otRate||0);
-  const cleanReason = existingOT ? (existingOT.reason||'').replace('Admin adjusted OT hours during approval','OT done') : '';
-  if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = cleanReason;
-  if(otExisting) otExisting.innerHTML = existingOT?
-    '<span style="color:var(--warn);font-weight:700">⏰ OT record exists: '+existingOT.hours+'hrs = ₹'+(existingOT.amount||0)+(existingOT.paid?' (Paid)':' (Unpaid)')+'</span>':'';
-  _updateOTPreview(w);
-
-  // Night OT suggestion — if punch out time is 9 PM or later, auto-suggest
-  // night OT (same logic as punch request card) and pre-tick the checkbox
-  const punchOutVal = rec?.punchOut || w.dutyEnd || '';
-  const nightSug = _nightOtSuggestion(punchOutVal);
   const nightSugBox = document.getElementById('att_night_ot_suggestion');
-  if(nightSugBox){
-    if(nightSug.hours > 0 && !existingOT){
-      // Pre-tick the OT checkbox and fill night OT values
-      const hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
-      const nightAmt = Math.round(nightSug.hours * hourlyRate);
-      if(otEnable){ otEnable.checked = true; }
-      if(otFields){ otFields.style.display = 'block'; }
-      if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = nightSug.hours;
-      if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = Math.round(hourlyRate);
-      if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = 'Night OT — '+nightSug.label;
-      nightSugBox.innerHTML = `<div style="background:rgba(123,31,162,.07);border:1.5px solid rgba(123,31,162,.3);border-radius:10px;padding:10px 12px;margin-bottom:8px">
-        <div style="font-size:11px;font-weight:700;color:#7b1fa2">🌙 Night OT Auto-Suggestion — ${nightSug.label}</div>
-        <div style="font-size:11px;color:var(--g600);margin-top:3px">${nightSug.hours}h × ₹${Math.round(hourlyRate)}/hr = <strong style="color:#7b1fa2">₹${nightAmt}</strong> — Pre-filled, edit ya uncheck karo agar nahi dena</div>
-      </div>`;
-      _updateOTPreview(w);
-    } else {
-      nightSugBox.innerHTML = '';
+
+  function _refreshAttOT(){
+    const calc = _calcAttOT();
+    const piVal = document.getElementById('att_punch_in').value;
+    const poVal = document.getElementById('att_punch_out').value;
+    if(!piVal||!poVal||!calc) { if(nightSugBox) nightSugBox.innerHTML=''; return; }
+    const hourlyRate = w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm2]=date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm2)/8;})();
+    // Convert HH:MM punch out to 12hr for night OT check
+    const [oh2,om2]=poVal.split(':').map(Number);
+    const period=oh2>=12?'pm':'am'; const h12=oh2>12?oh2-12:(oh2===0?12:oh2);
+    const punchOut12 = h12+':'+(om2<10?'0':'')+om2+' '+period;
+    const nightSug = _nightOtSuggestion(punchOut12);
+    const autoOTHours = calc.otHours;
+    const totalOTHours = +(autoOTHours + nightSug.hours).toFixed(2);
+    const totalOTAmt = Math.round(totalOTHours * hourlyRate);
+    // Show calculation summary
+    if(nightSugBox){
+      let html = `<div style="background:rgba(0,102,204,.06);border:1.5px dashed rgba(0,102,204,.3);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;color:var(--rb);margin-bottom:6px">⏱ ${piVal} → ${poVal} = <strong>${calc.hoursWorked.toFixed(2)}h</strong> worked</div>
+        <div style="font-size:11px;color:var(--g600)">8h standard ke baad: <strong style="color:#a05a00">${autoOTHours}h extra OT</strong></div>`;
+      if(nightSug.hours>0) html += `<div style="font-size:11px;color:#7b1fa2;margin-top:3px">🌙 Night OT (${nightSug.label}): <strong>+${nightSug.hours}h</strong></div>`;
+      if(totalOTHours>0) html += `<div style="font-size:11px;font-weight:700;color:var(--rb);margin-top:4px;padding-top:4px;border-top:1px solid rgba(0,0,0,.08)">Total OT: ${totalOTHours}h = ₹${totalOTAmt}</div>`;
+      html += '</div>';
+      nightSugBox.innerHTML = html;
     }
+    // Auto-fill OT fields
+    if(totalOTHours > 0){
+      if(otEnable && !otEnable.checked){ otEnable.checked=true; if(otFields) otFields.style.display='block'; }
+      if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = totalOTHours;
+      if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = Math.round(hourlyRate);
+      let reason = autoOTHours > 0 ? calc.hoursWorked.toFixed(2)+'h kaam kiya — '+autoOTHours+'h OT' : '';
+      if(nightSug.hours>0) reason += (reason?', ':'')+'Night OT ('+nightSug.label+')';
+      if(document.getElementById('att_ot_reason') && !existingOT) document.getElementById('att_ot_reason').value = reason;
+    } else {
+      if(nightSugBox) nightSugBox.innerHTML='';
+    }
+    _updateOTPreview(w);
+  }
+
+  // If existing OT record, show it; else auto-calculate from punch times
+  if(existingOT){
+    if(otEnable) otEnable.checked = true;
+    if(otFields) otFields.style.display = 'block';
+    if(document.getElementById('att_ot_hours')) document.getElementById('att_ot_hours').value = existingOT.hours;
+    if(document.getElementById('att_ot_rate')) document.getElementById('att_ot_rate').value = Math.round(existingOT.amount/existingOT.hours);
+    const cleanReason = (existingOT.reason||'').replace('Admin adjusted OT hours during approval','OT done');
+    if(document.getElementById('att_ot_reason')) document.getElementById('att_ot_reason').value = cleanReason;
+    if(otExisting) otExisting.innerHTML = '<span style="color:var(--warn);font-weight:700">⏰ OT record exists: '+existingOT.hours+'hrs = ₹'+(existingOT.amount||0)+(existingOT.paid?' (Paid)':' (Unpaid)')+'</span>';
+    _updateOTPreview(w);
+    // Still show the hours summary
+    _attOTRecalcFn = _refreshAttOT;
+    setTimeout(_refreshAttOT, 150);
+  } else {
+    if(otExisting) otExisting.innerHTML='';
+    // Wire punch time changes to auto-recalculate OT
+    const piEl = document.getElementById('att_punch_in');
+    const poEl = document.getElementById('att_punch_out');
+    const orig_pi = piEl.onchange; const orig_po = poEl.onchange;
+    piEl.onchange = function(){ if(orig_pi) orig_pi.call(this); _refreshAttOT(); };
+    poEl.onchange = function(){ if(orig_po) orig_po.call(this); _refreshAttOT(); };
+    // Wire recalc trigger
+    _attOTRecalcFn = _refreshAttOT;
+    setTimeout(_refreshAttOT, 150);
   }
 
   openModal('attEditModal');
@@ -4878,8 +4951,12 @@ function saveAttendanceEdit(){
   if(!w){showToast('Employee not found','error');return;}
   const status=document.getElementById('att_status').value;
   const days=+document.getElementById('att_days').value;
-  const punchIn=document.getElementById('att_punch_in').value;
-  const punchOut=document.getElementById('att_punch_out').value;
+  const _pi24=document.getElementById('att_punch_in').value;
+  const _po24=document.getElementById('att_punch_out').value;
+  // Convert HH:MM (from select) to 12hr am/pm format (app's standard storage format)
+  function _to12hr(t){ if(!t) return ''; const [h,m]=t.split(':').map(Number); if(isNaN(h)) return t; const p=h>=12?'pm':'am'; const h12=h>12?h-12:(h===0?12:h); return h12+':'+(m<10?'0':'')+m+' '+p; }
+  const punchIn=_to12hr(_pi24);
+  const punchOut=_to12hr(_po24);
   const date=document.getElementById('att_date').value;
   const location=document.getElementById('att_location').value.trim();
   const note=document.getElementById('att_note').value.trim();
@@ -8568,36 +8645,64 @@ function _eprRecalcAndShowPreview(resetOT){
   const hrs = _hoursBetween(existingRec.punchIn, time);
   if(hrs===null){ preview.style.display='none'; return; }
   preview.style.display='block';
-  const weight = Math.max(0, Math.min(1, hrs/8));
-  const autoExcessHrs = Math.round(Math.max(0, hrs-8)*100)/100;
-  const otInput = document.getElementById('epr_ot_hours');
-  if(resetOT) otInput.value = autoExcessHrs;
-  const otHrsUsed = +otInput.value || 0;
   const hourlyRate = w.salaryType==='daily' ? (w.basicSalary||0)/8 : (()=>{const [yy,mm]=date.split('-').map(Number); return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+
+  // Half Day override
+  const halfdayCb = document.getElementById('epr_halfday_cb');
+  const isHalfDay = halfdayCb && halfdayCb.checked;
+  const weight = isHalfDay ? 0.5 : Math.max(0, Math.min(1, hrs/8));
   const basicAmt = Math.round((w.salaryType==='daily'?(w.basicSalary||0):hourlyRate*8)*weight);
-  const otAmt = Math.round(otHrsUsed*hourlyRate);
-  const nightSug=_nightOtSuggestion(time);
-  const nightBox=document.getElementById('eprNightOTBox');
-  const nightCb=document.getElementById('epr_night_ot_cb');
-  const nightLabel=document.getElementById('eprNightOTLabel');
-  const nightAmt=document.getElementById('eprNightOTAmt');
-  if(nightBox&&nightCb){
-    if(nightSug.hours>0){
-      nightCb.dataset.hours=nightSug.hours;
-      if(resetOT) nightCb.checked=true; // auto-tick when time changes
-      const nRate=hourlyRate;
-      const nAmt=Math.round(nightSug.hours*nRate);
-      if(nightLabel) nightLabel.textContent='🌙 Night OT — '+nightSug.label;
-      if(nightAmt) nightAmt.textContent=nightSug.hours+' hrs = ₹'+nAmt.toLocaleString('en-IN')+' extra';
-      nightBox.style.display='block';
+
+  // Auto-OT checkbox
+  const autoExcessHrs = Math.round(Math.max(0, hrs-8)*100)/100;
+  const autoOTBox = document.getElementById('eprAutoOTBox');
+  const autoOTCb = document.getElementById('epr_auto_ot_cb');
+  const autoOTLabel = document.getElementById('eprAutoOTLabel');
+  const autoOTAmt = document.getElementById('eprAutoOTAmt');
+  if(autoOTBox && autoOTCb){
+    if(autoExcessHrs > 0 && !isHalfDay){
+      autoOTCb.dataset.hours = autoExcessHrs;
+      if(resetOT) autoOTCb.checked = true;
+      const aAmt = Math.round(autoExcessHrs * hourlyRate);
+      if(autoOTLabel) autoOTLabel.textContent = '⏱ Extra OT — '+autoExcessHrs+'h (8h se zyada)';
+      if(autoOTAmt) autoOTAmt.textContent = autoExcessHrs+' hrs = ₹'+aAmt.toLocaleString('en-IN')+' extra';
+      autoOTBox.style.display = 'block';
     } else {
-      nightBox.style.display='none';
-      if(nightCb) nightCb.checked=false;
+      autoOTBox.style.display = 'none';
+      if(autoOTCb) autoOTCb.checked = false;
     }
   }
-  const nightExtraHrs = (nightSug.hours>0 && nightCb&&nightCb.checked) ? nightSug.hours : 0;
+  const autoOTHrs = (autoExcessHrs>0 && autoOTCb&&autoOTCb.checked && !isHalfDay) ? autoExcessHrs : 0;
+  const autoOTAmtVal = Math.round(autoOTHrs * hourlyRate);
+
+  // Night OT checkbox
+  const nightSug = _nightOtSuggestion(time);
+  const nightBox = document.getElementById('eprNightOTBox');
+  const nightCb = document.getElementById('epr_night_ot_cb');
+  const nightLabel = document.getElementById('eprNightOTLabel');
+  const nightAmtEl = document.getElementById('eprNightOTAmt');
+  if(nightBox && nightCb){
+    if(nightSug.hours>0 && !isHalfDay){
+      nightCb.dataset.hours = nightSug.hours;
+      if(resetOT) nightCb.checked = true;
+      const nAmt = Math.round(nightSug.hours*hourlyRate);
+      if(nightLabel) nightLabel.textContent = '🌙 Night OT — '+nightSug.label;
+      if(nightAmtEl) nightAmtEl.textContent = nightSug.hours+' hrs = ₹'+nAmt.toLocaleString('en-IN')+' extra';
+      nightBox.style.display = 'block';
+    } else {
+      nightBox.style.display = 'none';
+      if(nightCb) nightCb.checked = false;
+    }
+  }
+  const nightExtraHrs = (nightSug.hours>0 && nightCb&&nightCb.checked && !isHalfDay) ? nightSug.hours : 0;
   const nightExtraAmt = Math.round(nightExtraHrs*hourlyRate);
-  document.getElementById('eprHoursText').innerHTML = existingRec.punchIn+' → '+time+' = <strong>'+hrs.toFixed(2)+'h</strong> worked<br>Basic: <strong style="color:var(--ok)">₹'+basicAmt.toLocaleString('en-IN')+'</strong> ('+(weight>=1?'full day':Math.round(weight*100)+'%')+')'+(otHrsUsed>0?' • OT: <strong style="color:#a05a00">₹'+otAmt.toLocaleString('en-IN')+'</strong>':'')+(nightExtraHrs>0?' • Night OT: <strong style="color:#7b1fa2">₹'+nightExtraAmt.toLocaleString('en-IN')+'</strong>':'');
+
+  document.getElementById('eprHoursText').innerHTML =
+    existingRec.punchIn+' → '+time+' = <strong>'+hrs.toFixed(2)+'h</strong> worked<br>' +
+    'Basic: <strong style="color:var(--ok)">₹'+basicAmt.toLocaleString('en-IN')+'</strong> ' +
+    (isHalfDay?'<span style="color:var(--warn)">(Half Day)</span>':'('+( weight>=1?'full day':Math.round(weight*100)+'%')+')') +
+    (autoOTHrs>0?' • OT: <strong style="color:#a05a00">₹'+autoOTAmtVal.toLocaleString('en-IN')+'</strong>':'') +
+    (nightExtraHrs>0?' • Night OT: <strong style="color:#7b1fa2">₹'+nightExtraAmt.toLocaleString('en-IN')+'</strong>':'');
 }
 
 function saveEditPunchReq(){
@@ -8613,28 +8718,32 @@ function saveEditPunchReq(){
   r.status='approved';
   r.approvedAt=new Date().toISOString();
   _applyPunchToAttendance(r);
-  // If admin adjusted the OT Hours field in this modal, that manual value takes
-  // precedence over whatever was auto-calculated.
+
+  // Half Day override — if admin checked it, force attendance to halfday regardless of punch times
   if(r.type==='out'){
-    const otInput=document.getElementById('epr_ot_hours');
-    if(otInput && otInput.parentElement.parentElement.style.display!=='none'){
-      const manualOT=+otInput.value||0;
-      const existingIdx=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
-      if(manualOT<=0){
-        if(existingIdx>=0){ _markDeleted('otLogs', otLogs[existingIdx].id); otLogs.splice(existingIdx,1); }
-      } else {
-        const w=workers.find(x=>x.id===r.workerId);
-        if(w){
-          const hourlyRate=w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
-          const amount=Math.round(manualOT*hourlyRate);
-          if(existingIdx>=0){
-            otLogs[existingIdx].hours=manualOT;
-            otLogs[existingIdx].amount=amount;
-            otLogs[existingIdx].reason='Admin adjusted OT hours during approval';
-          } else {
-            otLogs.push({id:Date.now()+Math.floor(Math.random()*1000),workerId:r.workerId,date:r.date,hours:manualOT,amount,paid:false,reason:'OT done',autoFromPunch:true});
-          }
-        }
+    const halfdayCb=document.getElementById('epr_halfday_cb');
+    if(halfdayCb&&halfdayCb.checked){
+      const attRec=attendanceRecords.find(a=>a.workerId===r.workerId&&a.date===r.date);
+      if(attRec){ attRec.status='halfday'; attRec.hoursWeight=0.5; }
+      // Remove any auto-OT since half day means no excess OT
+      const autoIdx=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
+      if(autoIdx>=0){ _markDeleted('otLogs',otLogs[autoIdx].id); otLogs.splice(autoIdx,1); }
+    }
+  }
+
+  // Auto-OT checkbox — add/remove based on checkbox state
+  if(r.type==='out'){
+    const autoOTCb=document.getElementById('epr_auto_ot_cb');
+    const autoOTHrs=autoOTCb&&autoOTCb.checked?+(autoOTCb.dataset.hours||0):0;
+    const existingIdx=otLogs.findIndex(o=>o.workerId===r.workerId&&o.date===r.date&&o.autoFromPunch);
+    if(autoOTHrs<=0){
+      if(existingIdx>=0){ _markDeleted('otLogs',otLogs[existingIdx].id); otLogs.splice(existingIdx,1); }
+    } else {
+      const w=workers.find(x=>x.id===r.workerId);
+      if(w){
+        const hourlyRate=w.salaryType==='daily'?(w.basicSalary||0)/8:(()=>{const[yy,mm]=r.date.split('-').map(Number);return (w.basicSalary||0)/getDaysInMonth(yy,mm)/8;})();
+        const rec={id:existingIdx>=0?otLogs[existingIdx].id:Date.now()+Math.floor(Math.random()*999),workerId:r.workerId,date:r.date,hours:autoOTHrs,amount:Math.round(autoOTHrs*hourlyRate),paid:false,reason:autoOTHrs+'h OT',autoFromPunch:true};
+        if(existingIdx>=0) otLogs[existingIdx]=rec; else otLogs.push(rec);
       }
     }
   }
